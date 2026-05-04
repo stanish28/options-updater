@@ -12,6 +12,12 @@ from __future__ import annotations
 import os
 import sys
 import logging
+
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
