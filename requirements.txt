@@ -1,0 +1,5 @@
+yfinance>=0.2.40
+google-api-python-client>=2.100
+google-auth>=2.23
+pandas-market-calendars>=4.3
+python-dotenv>=1.0
