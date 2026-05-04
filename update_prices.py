@@ -24,6 +24,11 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
+try:
+    from curl_cffi import requests as curl_requests
+    _YF_SESSION = curl_requests.Session(impersonate="chrome")
+except ImportError:
+    _YF_SESSION = None
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -104,7 +109,7 @@ def read_config(sheets, sheet_id: str, config_tab: str) -> list[Contract]:
 def fetch_quote(c: "Contract") -> Optional[dict]:
     """Return a dict with last/bid/ask for the contract, or None on failure."""
     try:
-        ticker = yf.Ticker(c.underlying)
+        ticker = yf.Ticker(c.underlying, session=_YF_SESSION) if _YF_SESSION else yf.Ticker(c.underlying)
         chain = ticker.option_chain(c.expiration)
     except Exception as e:
         log.error("yfinance failed for %s %s: %s", c.underlying, c.expiration, e)
@@ -170,6 +175,10 @@ def main() -> int:
         log.info("row %2d  %-30s  last=%s bid=%s ask=%s  -> $%d",
                  c.main_row, label, quote.get("last"), quote.get("bid"), quote.get("ask"), per_contract)
         updates.append({"range": f"{main_tab}!F{c.main_row}", "values": [[per_contract]]})
+
+    if not updates:
+        log.error("no prices fetched for any contract; skipping timestamp write so sheet doesn't appear fresh")
+        return 1
 
     today_label = datetime.now(ET).strftime("%b %-d")  # e.g. "May 5"
     updates.append({"range": f"{main_tab}!{TIMESTAMP_CELL}", "values": [[today_label]]})
