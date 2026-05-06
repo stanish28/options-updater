@@ -1,9 +1,8 @@
 """Daily options price updater.
 
-Reads open option contracts from a Config tab in a Google Sheet, fetches the
-latest last-trade price for each from Yahoo Finance via yfinance, and writes
-the price x 100 back into column F of the main tab. Also writes today's date
-to F6.
+Reads open option contracts from a Config tab in a Google Sheet, fetches each
+contract's most-recent close price from Polygon.io, and writes the price x 100
+back into column F of the main tab. Also writes today's date to F6.
 
 Configuration is via environment variables (see .env.example).
 """
@@ -11,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import logging
 
 try:
@@ -18,17 +18,13 @@ try:
     truststore.inject_into_ssl()
 except ImportError:
     pass
+
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import yfinance as yf
-try:
-    from curl_cffi import requests as curl_requests
-    _YF_SESSION = curl_requests.Session(impersonate="chrome")
-except ImportError:
-    _YF_SESSION = None
+import requests
 from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -46,6 +42,8 @@ log = logging.getLogger("options_updater")
 ET = ZoneInfo("America/New_York")
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 TIMESTAMP_CELL = "F6"
+POLYGON_BASE = "https://api.polygon.io"
+POLYGON_RATE_DELAY_S = 13  # free tier: 5 req/min, leave headroom
 
 
 @dataclass
@@ -74,7 +72,7 @@ def market_open_today(skip: bool) -> bool:
     return not sched.empty
 
 
-def sheets_service() -> "googleapiclient.discovery.Resource":
+def sheets_service():
     creds_path = env("GOOGLE_APPLICATION_CREDENTIALS", required=True)
     creds = Credentials.from_service_account_file(creds_path, scopes=SHEETS_SCOPES)
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
@@ -106,36 +104,50 @@ def read_config(sheets, sheet_id: str, config_tab: str) -> list[Contract]:
     return contracts
 
 
-def fetch_quote(c: "Contract") -> Optional[dict]:
-    """Return a dict with last/bid/ask for the contract, or None on failure."""
+def occ_ticker(c: Contract) -> str:
+    """Build Polygon's options ticker, e.g. O:NNE260515P00019000."""
+    y, m, d = c.expiration.split("-")
+    yymmdd = f"{y[-2:]}{m}{d}"
+    strike_int = int(round(c.strike * 1000))
+    return f"O:{c.underlying.upper()}{yymmdd}{c.type.upper()}{strike_int:08d}"
+
+
+def fetch_close(occ: str, api_key: str) -> Optional[float]:
+    """Fetch most-recent close from Polygon. Tries today's daily agg, then /prev."""
+    today = datetime.now(ET).date()
+
+    # 1) Today's daily aggregate (works after EOD on free tier)
+    url = f"{POLYGON_BASE}/v2/aggs/ticker/{occ}/range/1/day/{today.isoformat()}/{today.isoformat()}"
     try:
-        ticker = yf.Ticker(c.underlying, session=_YF_SESSION) if _YF_SESSION else yf.Ticker(c.underlying)
-        chain = ticker.option_chain(c.expiration)
-    except Exception as e:
-        log.error("yfinance failed for %s %s: %s", c.underlying, c.expiration, e)
-        return None
-    df = chain.calls if c.type == "C" else chain.puts
-    match = df[df["strike"] == c.strike]
-    if match.empty:
-        log.warning("no option row found for %s %s %s%s",
-                    c.underlying, c.expiration, c.type, c.strike)
-        return None
-    row = match.iloc[0]
-    return {
-        "last": float(row.get("lastPrice")) if row.get("lastPrice") is not None else None,
-        "bid":  float(row.get("bid"))       if row.get("bid")       is not None else None,
-        "ask":  float(row.get("ask"))       if row.get("ask")       is not None else None,
-    }
+        r = requests.get(url, params={"apikey": api_key, "adjusted": "true"}, timeout=20)
+        if r.status_code == 200:
+            results = r.json().get("results") or []
+            if results and results[0].get("c") is not None:
+                return float(results[0]["c"])
+        elif r.status_code == 429:
+            log.warning("polygon 429 rate limit on %s; sleeping 60s", occ)
+            time.sleep(60)
+        else:
+            log.debug("polygon range/today %s -> %d %s", occ, r.status_code, r.text[:120])
+    except requests.RequestException as e:
+        log.warning("polygon range request failed for %s: %s", occ, e)
 
+    # 2) Fall back to /prev (previous trading day)
+    url = f"{POLYGON_BASE}/v2/aggs/ticker/{occ}/prev"
+    try:
+        r = requests.get(url, params={"apikey": api_key, "adjusted": "true"}, timeout=20)
+        if r.status_code == 200:
+            results = r.json().get("results") or []
+            if results and results[0].get("c") is not None:
+                return float(results[0]["c"])
+        elif r.status_code == 429:
+            log.warning("polygon 429 rate limit on %s (prev); sleeping 60s", occ)
+            time.sleep(60)
+        else:
+            log.debug("polygon prev %s -> %d %s", occ, r.status_code, r.text[:120])
+    except requests.RequestException as e:
+        log.warning("polygon prev request failed for %s: %s", occ, e)
 
-def pick_price(quote: dict) -> Optional[float]:
-    last = quote.get("last")
-    if last is not None and last > 0:
-        return float(last)
-    bid = quote.get("bid")
-    ask = quote.get("ask")
-    if bid is not None and ask is not None and bid > 0 and ask > 0:
-        return (float(bid) + float(ask)) / 2.0
     return None
 
 
@@ -143,6 +155,7 @@ def main() -> int:
     sheet_id   = env("SHEET_ID", required=True)
     main_tab   = env("MAIN_TAB", "Sheet1")
     config_tab = env("CONFIG_TAB", "Config")
+    api_key    = env("POLYGON_API_KEY", required=True)
     dry_run    = env("DRY_RUN") == "1"
     only_row   = int(env("ONLY_ROW")) if env("ONLY_ROW") else None
     skip_hol   = env("SKIP_HOLIDAY_CHECK") == "1"
@@ -161,26 +174,27 @@ def main() -> int:
         return 0
 
     updates: list[dict] = []
-    for c in contracts:
+    for i, c in enumerate(contracts):
         label = f"{c.underlying} {c.expiration} {c.type}{c.strike}"
-        quote = fetch_quote(c)
-        if not quote:
-            log.warning("skipping row %d (%s): no quote", c.main_row, label)
-            continue
-        price = pick_price(quote)
-        if price is None:
-            log.warning("skipping row %d (%s): no usable price (last/bid/ask all empty)", c.main_row, label)
-            continue
-        per_contract = round(price * 100)
-        log.info("row %2d  %-30s  last=%s bid=%s ask=%s  -> $%d",
-                 c.main_row, label, quote.get("last"), quote.get("bid"), quote.get("ask"), per_contract)
-        updates.append({"range": f"{main_tab}!F{c.main_row}", "values": [[per_contract]]})
+        occ = occ_ticker(c)
+        close = fetch_close(occ, api_key)
+        if close is None:
+            log.warning("skipping row %d (%s, %s): no Polygon data", c.main_row, label, occ)
+        else:
+            per_contract = round(close * 100)
+            log.info("row %2d  %-30s  %s  close=%.2f -> $%d",
+                     c.main_row, label, occ, close, per_contract)
+            updates.append({"range": f"{main_tab}!F{c.main_row}", "values": [[per_contract]]})
+
+        # Rate-limit pause between contracts (skip after last)
+        if i < len(contracts) - 1:
+            time.sleep(POLYGON_RATE_DELAY_S)
 
     if not updates:
         log.error("no prices fetched for any contract; skipping timestamp write so sheet doesn't appear fresh")
         return 1
 
-    today_label = datetime.now(ET).strftime("%b %-d")  # e.g. "May 5"
+    today_label = datetime.now(ET).strftime("%b %-d")
     updates.append({"range": f"{main_tab}!{TIMESTAMP_CELL}", "values": [[today_label]]})
 
     if dry_run:

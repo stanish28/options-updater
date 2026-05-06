@@ -1,7 +1,6 @@
-yfinance>=0.2.40
+requests>=2.31
 google-api-python-client>=2.100
 google-auth>=2.23
 pandas-market-calendars>=4.3
 python-dotenv>=1.0
 truststore>=0.9
-curl_cffi>=0.7
