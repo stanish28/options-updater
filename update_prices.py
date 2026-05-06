@@ -117,20 +117,24 @@ def fetch_close(occ: str, api_key: str) -> Optional[float]:
     (~5-6 PM ET) /prev returns today's close. Free tier supports this endpoint.
     Retries once on 429."""
     url = f"{POLYGON_BASE}/v2/aggs/ticker/{occ}/prev"
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            r = requests.get(url, params={"apikey": api_key, "adjusted": "true"}, timeout=20)
+            r = requests.get(url, params={"apikey": api_key, "adjusted": "true"}, timeout=30)
         except requests.RequestException as e:
-            log.warning("polygon request failed for %s: %s", occ, e)
+            if attempt < 2:
+                log.warning("polygon connection error for %s (attempt %d): %s; retrying in 30s", occ, attempt + 1, e)
+                time.sleep(30)
+                continue
+            log.warning("polygon request failed for %s after retries: %s", occ, e)
             return None
         if r.status_code == 200:
             results = r.json().get("results") or []
             if results and results[0].get("c") is not None:
                 return float(results[0]["c"])
-            log.warning("polygon /prev %s -> 200 but no results", occ)
+            log.warning("polygon /prev %s -> 200 but no results (illiquid or never-traded?)", occ)
             return None
-        if r.status_code == 429 and attempt == 0:
-            log.warning("polygon 429 on %s; sleeping 60s and retrying once", occ)
+        if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+            log.warning("polygon %d on %s (attempt %d); sleeping 60s before retry", r.status_code, occ, attempt + 1)
             time.sleep(60)
             continue
         log.warning("polygon /prev %s -> %d %s", occ, r.status_code, r.text[:200])
