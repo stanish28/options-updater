@@ -113,41 +113,28 @@ def occ_ticker(c: Contract) -> str:
 
 
 def fetch_close(occ: str, api_key: str) -> Optional[float]:
-    """Fetch most-recent close from Polygon. Tries today's daily agg, then /prev."""
-    today = datetime.now(ET).date()
-
-    # 1) Today's daily aggregate (works after EOD on free tier)
-    url = f"{POLYGON_BASE}/v2/aggs/ticker/{occ}/range/1/day/{today.isoformat()}/{today.isoformat()}"
-    try:
-        r = requests.get(url, params={"apikey": api_key, "adjusted": "true"}, timeout=20)
-        if r.status_code == 200:
-            results = r.json().get("results") or []
-            if results and results[0].get("c") is not None:
-                return float(results[0]["c"])
-        elif r.status_code == 429:
-            log.warning("polygon 429 rate limit on %s; sleeping 60s", occ)
-            time.sleep(60)
-        else:
-            log.debug("polygon range/today %s -> %d %s", occ, r.status_code, r.text[:120])
-    except requests.RequestException as e:
-        log.warning("polygon range request failed for %s: %s", occ, e)
-
-    # 2) Fall back to /prev (previous trading day)
+    """Fetch the most-recent close from Polygon /prev. After EOD processing
+    (~5-6 PM ET) /prev returns today's close. Free tier supports this endpoint.
+    Retries once on 429."""
     url = f"{POLYGON_BASE}/v2/aggs/ticker/{occ}/prev"
-    try:
-        r = requests.get(url, params={"apikey": api_key, "adjusted": "true"}, timeout=20)
+    for attempt in range(2):
+        try:
+            r = requests.get(url, params={"apikey": api_key, "adjusted": "true"}, timeout=20)
+        except requests.RequestException as e:
+            log.warning("polygon request failed for %s: %s", occ, e)
+            return None
         if r.status_code == 200:
             results = r.json().get("results") or []
             if results and results[0].get("c") is not None:
                 return float(results[0]["c"])
-        elif r.status_code == 429:
-            log.warning("polygon 429 rate limit on %s (prev); sleeping 60s", occ)
+            log.warning("polygon /prev %s -> 200 but no results", occ)
+            return None
+        if r.status_code == 429 and attempt == 0:
+            log.warning("polygon 429 on %s; sleeping 60s and retrying once", occ)
             time.sleep(60)
-        else:
-            log.debug("polygon prev %s -> %d %s", occ, r.status_code, r.text[:120])
-    except requests.RequestException as e:
-        log.warning("polygon prev request failed for %s: %s", occ, e)
-
+            continue
+        log.warning("polygon /prev %s -> %d %s", occ, r.status_code, r.text[:200])
+        return None
     return None
 
 
