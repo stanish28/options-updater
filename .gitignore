@@ -1,6 +1,7 @@
 .env
 *.json
 !*.example.json
+!latest_prices.json
 __pycache__/
 *.pyc
 .venv/

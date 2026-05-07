@@ -1,0 +1,76 @@
+{
+  "asof_iso": "2026-05-07T04:44:29.091494-04:00",
+  "asof_label": "May 7",
+  "prices": [
+    {
+      "row": 19,
+      "price": 5
+    },
+    {
+      "row": 20,
+      "price": 15
+    },
+    {
+      "row": 21,
+      "price": 20
+    },
+    {
+      "row": 22,
+      "price": 4
+    },
+    {
+      "row": 23,
+      "price": 133
+    },
+    {
+      "row": 24,
+      "price": 3200
+    },
+    {
+      "row": 25,
+      "price": 207
+    },
+    {
+      "row": 26,
+      "price": 189
+    },
+    {
+      "row": 27,
+      "price": 1835
+    },
+    {
+      "row": 28,
+      "price": 1151
+    },
+    {
+      "row": 29,
+      "price": 1091
+    },
+    {
+      "row": 30,
+      "price": 792
+    },
+    {
+      "row": 31,
+      "price": 1694
+    },
+    {
+      "row": 32,
+      "price": 275
+    },
+    {
+      "row": 33,
+      "price": 1520
+    },
+    {
+      "row": 34,
+      "price": 62
+    },
+    {
+      "row": 35,
+      "price": 310
+    }
+  ],
+  "fetched_count": 17,
+  "expected_count": 17
+}
