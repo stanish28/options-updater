@@ -1,6 +1,6 @@
 {
-  "asof_iso": "2026-05-20T18:57:43.134556-04:00",
-  "asof_label": "May 20",
+  "asof_iso": "2026-05-21T18:53:37.397881-04:00",
+  "asof_label": "May 21",
   "prices": [
     {
       "row": 19,
@@ -20,19 +20,19 @@
     },
     {
       "row": 23,
-      "price": 31
+      "price": 35
     },
     {
       "row": 24,
-      "price": 2150
+      "price": 2593
     },
     {
       "row": 25,
-      "price": 119
+      "price": 113
     },
     {
       "row": 26,
-      "price": 222
+      "price": 228
     },
     {
       "row": 27,
@@ -40,27 +40,27 @@
     },
     {
       "row": 28,
-      "price": 1355
+      "price": 1236
     },
     {
       "row": 29,
-      "price": 800
+      "price": 810
     },
     {
       "row": 30,
-      "price": 640
+      "price": 717
     },
     {
       "row": 31,
-      "price": 4995
+      "price": 5500
     },
     {
       "row": 32,
-      "price": 174
+      "price": 172
     },
     {
       "row": 33,
-      "price": 2410
+      "price": 2422
     },
     {
       "row": 34,
@@ -68,7 +68,7 @@
     },
     {
       "row": 35,
-      "price": 150
+      "price": 157
     }
   ],
   "fetched_count": 17,
