@@ -1,62 +1,54 @@
-# Options Price Auto-Updater
+# Options Position Tracker
 
-Daily job that updates column F ("Current Price per Con") of the options
-tracking Google Sheet with the latest last-trade price for each open contract,
-plus the as-of date in F6. Designed to run unattended at 4:30 PM ET on
-weekdays. Quote source: Yahoo Finance (via `yfinance`) — no API key required.
+On-demand sync from Robinhood to a Google Sheet. Run `./sync` from this
+directory after every trade and the **Positions** tab is rewritten with
+your current portfolio:
+
+- Account summary header (equity, today's change, buying power, cash)
+- Every open option position with live mark price and unrealized P/L
+
+Sheet1 is **not** touched — it's your hand-curated history view. The
+Positions tab is the live dashboard.
 
 ## Files
-- `update_prices.py` — main script
+
+- `sync_positions.py` — main script
+- `sync` — convenience wrapper (`./sync` from this dir)
 - `requirements.txt` — Python deps
 - `.env.example` — copy to `.env` and fill in
-- `service_account.json` — Google service-account key (you provide; gitignored)
+- `service-account.json` — Google service-account key (gitignored)
 
 ## One-time setup
 
 ### 1. Google service account
-1. https://console.cloud.google.com → new project `options-updater`.
-2. Enable the Google Sheets API.
-3. IAM & Admin → Service Accounts → create `sheets-writer` → Keys → add JSON key.
-4. Download the JSON, save as `service_account.json` next to `update_prices.py`.
-5. Copy the `client_email` from the JSON, share the Google Sheet with that email as Editor.
+1. https://console.cloud.google.com → new project → enable Google Sheets API
+2. IAM & Admin → Service Accounts → create one → Keys → add JSON key
+3. Save JSON as `service-account.json` next to `sync_positions.py`
+4. Share your Google Sheet with the service account's `client_email` as Editor
 
-### 2. Config tab
-The script's setup step creates a `Config` tab with header `Underlying | Expiration | Strike | Type | MainSheetRow`. Fill one row per open contract:
-- `Expiration` in `YYYY-MM-DD`
-- `Type` is `C` (call) or `P` (put)
-- `MainSheetRow` is the row number on the main tab whose F-cell to overwrite
+### 2. Find your Robinhood account number
+If you use Robinhood's "multiple investing accounts" feature, the API
+defaults to the wrong account. Find the right one in the app:
+**Account icon → Menu → Account No. → Show numbers**, copy the number
+matching the account you want (e.g. "Bhuvan").
 
-Update this tab whenever you open or close a contract.
-
-### 3. Local install
-```
-cd ~/Desktop/options_updater
+### 3. Install + configure
+```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# edit .env: ROBINHOOD_USERNAME, ROBINHOOD_PASSWORD, ROBINHOOD_ACCOUNT_NUMBER,
+#           SHEET_ID, GOOGLE_APPLICATION_CREDENTIALS
 ```
 
 ## Running
 
-Dry run (no sheet writes):
-```
-DRY_RUN=1 python update_prices.py
-```
-
-Update one row only:
-```
-ONLY_ROW=16 python update_prices.py
+```bash
+./sync
 ```
 
-Full live run:
-```
-python update_prices.py
-```
+First run prompts for 2FA (Robinhood will text you a code, OR push to
+your phone for device approval). After that the session is cached in
+`~/.tokens/robinhood.pickle` and subsequent runs go straight through.
 
-Force-run on a market-closed day (testing):
-```
-SKIP_HOLIDAY_CHECK=1 python update_prices.py
-```
-
-## Schedule
-Production schedule: cron `30 16 * * 1-5` in `America/New_York` (4:30 PM ET, weekdays). Script self-skips on NYSE holidays.
+Typical runtime: ~10 seconds for ~20 positions.
