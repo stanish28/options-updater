@@ -4,3 +4,4 @@ google-auth>=2.23
 pandas-market-calendars>=4.3
 python-dotenv>=1.0
 truststore>=0.9
+robin_stocks>=3.1

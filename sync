@@ -1,0 +1,7 @@
+#!/bin/bash
+# Convenience wrapper: run from anywhere with `~/Desktop/options_updater/sync`
+# (or add this directory to PATH for just `sync`).
+set -e
+cd "$(dirname "$0")"
+source .venv/bin/activate
+exec python3 sync_positions.py "$@"
