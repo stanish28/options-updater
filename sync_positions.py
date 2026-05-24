@@ -54,26 +54,6 @@ def _as_float(v) -> Optional[float]:
         return None
 
 
-def fetch_account_summary(account_number: Optional[str]) -> dict:
-    """Return account-level dashboard numbers: equity, day change, buying power, cash."""
-    port = r.profiles.load_portfolio_profile(account_number=account_number) or {}
-    acct = r.profiles.load_account_profile(account_number=account_number) or {}
-    equity = _as_float(port.get("equity"))
-    prev_close_equity = _as_float(port.get("adjusted_equity_previous_close"))
-    day_change = None
-    day_change_pct = None
-    if equity is not None and prev_close_equity not in (None, 0):
-        day_change = equity - prev_close_equity
-        day_change_pct = (day_change / prev_close_equity) * 100
-    return {
-        "equity": equity,
-        "day_change": day_change,
-        "day_change_pct": day_change_pct,
-        "buying_power": _as_float(acct.get("buying_power")),
-        "cash": _as_float(acct.get("cash")),
-    }
-
-
 def fetch_market_price(option_id: str) -> Optional[float]:
     """Return current mark price per CONTRACT (mark × 100) for an option, or None."""
     try:
@@ -146,7 +126,6 @@ def ensure_tab(svc, sheet_id: str, tab: str) -> None:
     log.info("Created missing tab: %s", tab)
 
 
-CURRENCY_FMT = '"$"#,##0.00'
 NUMBER_2DEC_FMT = '#,##0.00'
 SIGNED_CURRENCY_FMT = '[Color10]"+$"#,##0.00;[Red]"-$"#,##0.00;"$"0.00'
 SIGNED_PCT_FMT       = '[Color10]"+"0.00%;[Red]"-"0.00%;0.00%'
@@ -196,28 +175,14 @@ def write_tab(svc, sheet_id: str, tab: str, values: list[list],
                                        body={"requests": format_requests}).execute()
 
 
-def build_sheet(summary: dict, positions: list[dict]) -> tuple[list[list], int]:
-    """Build the full Positions tab content. Returns (rows, total_pl_row_index).
+def build_sheet(positions: list[dict]) -> tuple[list[list], int]:
+    """Build the Positions tab content. Returns (rows, total_pl_row_index).
 
-    Summary values are raw numbers; display formatting is applied separately.
     Positions are sorted by expiry (ascending). A TOTAL row is appended at the
-    bottom summing P/L so you can sanity-check against the account dashboard."""
+    bottom summing P/L."""
     rows: list[list] = []
 
-    # --- Account dashboard (rows 1-2) ---
-    rows.append(["Account Value", "Today's Change", "Today's %", "Buying Power", "Cash"])
-    rows.append([
-        summary["equity"]                                     if summary["equity"] is not None else "",
-        summary["day_change"]                                 if summary["day_change"] is not None else "",
-        (summary["day_change_pct"] / 100)                     if summary["day_change_pct"] is not None else "",
-        summary["buying_power"]                               if summary["buying_power"] is not None else "",
-        summary["cash"]                                       if summary["cash"] is not None else "",
-    ])
-
-    # --- Blank spacer (row 3) ---
-    rows.append([])
-
-    # --- Position table header (row 4) + body (rows 5+) ---
+    # --- Header row + body ---
     rows.append(["Ticker", "Strike", "Expiry", "Put/Call",
                  "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss", "% Change"])
 
@@ -269,28 +234,18 @@ def main() -> int:
     account_number = env("ROBINHOOD_ACCOUNT_NUMBER") or None
 
     login()
-    summary = fetch_account_summary(account_number)
     positions = fetch_positions(account_number)
-
-    log.info("Account: equity=$%s day_change=$%s buying_power=$%s",
-             f"{summary['equity']:,.2f}" if summary['equity'] else "?",
-             f"{summary['day_change']:+,.2f}" if summary['day_change'] is not None else "?",
-             f"{summary['buying_power']:,.2f}" if summary['buying_power'] else "?")
 
     svc = sheets_service()
     ensure_tab(svc, sheet_id, POSITIONS_TAB)
-    sheet_rows, total_row_idx = build_sheet(summary, positions)
+    sheet_rows, total_row_idx = build_sheet(positions)
     sid = _sheet_id_int(svc, sheet_id, POSITIONS_TAB)
 
-    fmt_requests = []
-    # Summary row (row 2, zero-indexed=1)
-    for col, pattern in enumerate(
-        [CURRENCY_FMT, SIGNED_CURRENCY_FMT, SIGNED_PCT_FMT, CURRENCY_FMT, CURRENCY_FMT]):
-        fmt_requests.append(_num_format_req(sid, 1, 2, col, pattern))
-    # Position-table body + TOTAL row: columns E (avg), G (current), H (P/L), I (% change)
-    body_start = 4                              # zero-indexed row 4 = sheet row 5 (first position)
-    body_end = total_row_idx                    # zero-indexed exclusive end = TOTAL row index
-    fmt_requests += [
+    # Position table body + TOTAL row formatting (header at row 1 / idx 0,
+    # body at rows 2..total_row_idx, TOTAL at total_row_idx+1).
+    body_start = 1                              # zero-indexed = sheet row 2 (first position)
+    body_end = total_row_idx                    # exclusive end = TOTAL row index
+    fmt_requests = [
         _num_format_req(sid, body_start, body_end, 4, NUMBER_2DEC_FMT),     # E avg
         _num_format_req(sid, body_start, body_end, 6, NUMBER_2DEC_FMT),     # G current
         _num_format_req(sid, body_start, body_end, 7, SIGNED_CURRENCY_FMT), # H P/L
@@ -298,12 +253,12 @@ def main() -> int:
         _num_format_req(sid, total_row_idx, total_row_idx + 1, 7, SIGNED_CURRENCY_FMT),  # TOTAL P/L
         _num_format_req(sid, total_row_idx, total_row_idx + 1, 8, SIGNED_PCT_FMT),       # TOTAL %
     ]
-    # Bold: header row 1 (idx 0), table header row 4 (idx 3), TOTAL row
-    for r in (0, 3, total_row_idx):
+    # Bold: table header (row 0) and TOTAL row
+    for r in (0, total_row_idx):
         fmt_requests.append(_bold_row_req(sid, r))
 
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
-    log.info("Wrote Positions tab: %d position(s) + summary + totals", len(positions))
+    log.info("Wrote Positions tab: %d position(s) + totals", len(positions))
     return 0
 
 
