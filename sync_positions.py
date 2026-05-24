@@ -147,6 +147,7 @@ def ensure_tab(svc, sheet_id: str, tab: str) -> None:
 
 
 CURRENCY_FMT = '"$"#,##0.00'
+NUMBER_2DEC_FMT = '#,##0.00'
 SIGNED_CURRENCY_FMT = '[Color10]"+$"#,##0.00;[Red]"-$"#,##0.00;"$"0.00'
 SIGNED_PCT_FMT       = '[Color10]"+"0.00%;[Red]"-"0.00%;0.00%'
 
@@ -157,72 +158,75 @@ def _sheet_id_int(svc, sheet_id: str, tab: str) -> int:
                 if s["properties"]["title"] == tab)
 
 
+def _num_format_req(sid: int, start_row: int, end_row: int, col: int, pattern: str) -> dict:
+    return {"repeatCell": {
+        "range": {"sheetId": sid,
+                  "startRowIndex": start_row, "endRowIndex": end_row,
+                  "startColumnIndex": col, "endColumnIndex": col + 1},
+        "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": pattern}}},
+        "fields": "userEnteredFormat.numberFormat",
+    }}
+
+
+def _bold_row_req(sid: int, row: int) -> dict:
+    return {"repeatCell": {
+        "range": {"sheetId": sid, "startRowIndex": row, "endRowIndex": row + 1},
+        "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
+        "fields": "userEnteredFormat.textFormat.bold",
+    }}
+
+
 def write_tab(svc, sheet_id: str, tab: str, values: list[list],
-              summary_formats: Optional[list[Optional[str]]] = None) -> None:
-    """Reset formatting+values on the tab then write fresh. If summary_formats
-    is given, apply those number formats to row 2 (the dashboard values row)."""
+              format_requests: Optional[list[dict]] = None) -> None:
+    """Reset formatting+values on the tab then write fresh. If format_requests is
+    given, run them as a follow-up batchUpdate to apply number formats / bolding."""
     sid = _sheet_id_int(svc, sheet_id, tab)
-    requests = [{
+    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [{
         "updateCells": {
             "range": {"sheetId": sid},
             "fields": "userEnteredFormat,userEnteredValue",
         }
-    }]
-    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": requests}).execute()
+    }]}).execute()
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id, range=f"{tab}!A1",
         valueInputOption="USER_ENTERED", body={"values": values},
     ).execute()
-    if summary_formats:
-        fmt_requests = []
-        for col, pattern in enumerate(summary_formats):
-            if not pattern:
-                continue
-            fmt_requests.append({
-                "repeatCell": {
-                    "range": {
-                        "sheetId": sid,
-                        "startRowIndex": 1, "endRowIndex": 2,        # row 2 (zero-indexed)
-                        "startColumnIndex": col, "endColumnIndex": col + 1,
-                    },
-                    "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": pattern}}},
-                    "fields": "userEnteredFormat.numberFormat",
-                }
-            })
-        # Bold the two header rows
-        for row in (0, 3):
-            fmt_requests.append({
-                "repeatCell": {
-                    "range": {"sheetId": sid, "startRowIndex": row, "endRowIndex": row + 1},
-                    "cell": {"userEnteredFormat": {"textFormat": {"bold": True}}},
-                    "fields": "userEnteredFormat.textFormat.bold",
-                }
-            })
-        svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": fmt_requests}).execute()
+    if format_requests:
+        svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id,
+                                       body={"requests": format_requests}).execute()
 
 
-def build_sheet(summary: dict, positions: list[dict]) -> list[list]:
-    """Build the full Positions tab content: summary header + position table.
-    Summary values are raw numbers; display formatting is applied separately."""
+def build_sheet(summary: dict, positions: list[dict]) -> tuple[list[list], int]:
+    """Build the full Positions tab content. Returns (rows, total_pl_row_index).
+
+    Summary values are raw numbers; display formatting is applied separately.
+    Positions are sorted by expiry (ascending). A TOTAL row is appended at the
+    bottom summing P/L so you can sanity-check against the account dashboard."""
     rows: list[list] = []
 
     # --- Account dashboard (rows 1-2) ---
     rows.append(["Account Value", "Today's Change", "Today's %", "Buying Power", "Cash"])
     rows.append([
-        summary["equity"] if summary["equity"] is not None else "",
-        summary["day_change"] if summary["day_change"] is not None else "",
-        (summary["day_change_pct"] / 100) if summary["day_change_pct"] is not None else "",
-        summary["buying_power"] if summary["buying_power"] is not None else "",
-        summary["cash"] if summary["cash"] is not None else "",
+        summary["equity"]                                     if summary["equity"] is not None else "",
+        summary["day_change"]                                 if summary["day_change"] is not None else "",
+        (summary["day_change_pct"] / 100)                     if summary["day_change_pct"] is not None else "",
+        summary["buying_power"]                               if summary["buying_power"] is not None else "",
+        summary["cash"]                                       if summary["cash"] is not None else "",
     ])
 
     # --- Blank spacer (row 3) ---
     rows.append([])
 
-    # --- Position table (rows 4 and on) ---
+    # --- Position table header (row 4) + body (rows 5+) ---
     rows.append(["Ticker", "Strike", "Expiry", "Put/Call",
-                 "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss"])
-    for p in positions:
+                 "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss", "% Change"])
+
+    sorted_positions = sorted(positions, key=lambda p: p["expiration"])
+
+    total_pl = 0.0
+    total_cost_basis = 0.0
+    have_any_pl = False
+    for p in sorted_positions:
         avg_unsigned = abs(p["avg_price"])
         qty = p["quantity"]
         qty_signed = int(qty) if qty.is_integer() else qty
@@ -232,16 +236,32 @@ def build_sheet(summary: dict, positions: list[dict]) -> list[list]:
                 pl = (current - avg_unsigned) * abs(qty)
             else:
                 pl = (avg_unsigned - current) * abs(qty)
-            current_disp = round(current)
-            pl_disp = round(pl)
+            cost_basis = avg_unsigned * abs(qty)
+            pct_change = pl / cost_basis if cost_basis > 0 else None
+            current_disp = round(current, 2)
+            pl_disp = round(pl, 2)
+            pct_disp = pct_change if pct_change is not None else ""
+            total_pl += pl
+            total_cost_basis += cost_basis
+            have_any_pl = True
         else:
             current_disp = ""
             pl_disp = ""
+            pct_disp = ""
         rows.append([
             p["underlying"], p["strike"], p["expiration"], p["type"],
-            round(avg_unsigned, 2), qty_signed, current_disp, pl_disp,
+            round(avg_unsigned, 2), qty_signed, current_disp, pl_disp, pct_disp,
         ])
-    return rows
+
+    # --- Totals row at the bottom (blank spacer + TOTAL row) ---
+    rows.append([])
+    total_row_idx = len(rows)        # 1-based position of TOTAL row when written
+    if have_any_pl:
+        total_pct = total_pl / total_cost_basis if total_cost_basis > 0 else ""
+        rows.append(["TOTAL", "", "", "", "", "", "", round(total_pl, 2), total_pct])
+    else:
+        rows.append(["TOTAL", "", "", "", "", "", "", "", ""])
+    return rows, total_row_idx
 
 
 def main() -> int:
@@ -259,10 +279,31 @@ def main() -> int:
 
     svc = sheets_service()
     ensure_tab(svc, sheet_id, POSITIONS_TAB)
-    summary_formats = [CURRENCY_FMT, SIGNED_CURRENCY_FMT, SIGNED_PCT_FMT, CURRENCY_FMT, CURRENCY_FMT]
-    write_tab(svc, sheet_id, POSITIONS_TAB,
-              build_sheet(summary, positions), summary_formats=summary_formats)
-    log.info("Wrote Positions tab: %d position(s) + summary header", len(positions))
+    sheet_rows, total_row_idx = build_sheet(summary, positions)
+    sid = _sheet_id_int(svc, sheet_id, POSITIONS_TAB)
+
+    fmt_requests = []
+    # Summary row (row 2, zero-indexed=1)
+    for col, pattern in enumerate(
+        [CURRENCY_FMT, SIGNED_CURRENCY_FMT, SIGNED_PCT_FMT, CURRENCY_FMT, CURRENCY_FMT]):
+        fmt_requests.append(_num_format_req(sid, 1, 2, col, pattern))
+    # Position-table body + TOTAL row: columns E (avg), G (current), H (P/L), I (% change)
+    body_start = 4                              # zero-indexed row 4 = sheet row 5 (first position)
+    body_end = total_row_idx                    # zero-indexed exclusive end = TOTAL row index
+    fmt_requests += [
+        _num_format_req(sid, body_start, body_end, 4, NUMBER_2DEC_FMT),     # E avg
+        _num_format_req(sid, body_start, body_end, 6, NUMBER_2DEC_FMT),     # G current
+        _num_format_req(sid, body_start, body_end, 7, SIGNED_CURRENCY_FMT), # H P/L
+        _num_format_req(sid, body_start, body_end, 8, SIGNED_PCT_FMT),      # I % change
+        _num_format_req(sid, total_row_idx, total_row_idx + 1, 7, SIGNED_CURRENCY_FMT),  # TOTAL P/L
+        _num_format_req(sid, total_row_idx, total_row_idx + 1, 8, SIGNED_PCT_FMT),       # TOTAL %
+    ]
+    # Bold: header row 1 (idx 0), table header row 4 (idx 3), TOTAL row
+    for r in (0, 3, total_row_idx):
+        fmt_requests.append(_bold_row_req(sid, r))
+
+    write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
+    log.info("Wrote Positions tab: %d position(s) + summary + totals", len(positions))
     return 0
 
 
