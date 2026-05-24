@@ -57,6 +57,33 @@ def login() -> None:
     log.info("Logged in")
 
 
+def fetch_market_price(option_id: str) -> Optional[float]:
+    """Return current mark price per CONTRACT (mark × 100) for an option, or None."""
+    try:
+        mkt = r.options.get_option_market_data_by_id(option_id)
+    except Exception as e:
+        log.warning("market_data fetch failed for %s: %s", option_id, e)
+        return None
+    if not mkt:
+        return None
+    m = mkt[0] if isinstance(mkt, list) else mkt
+    # Prefer mark, fall back to last_trade, then mid-of-bid/ask
+    for key in ("mark_price", "adjusted_mark_price", "last_trade_price"):
+        v = m.get(key)
+        if v not in (None, "", "0", "0.0", "0.00", "0.000000"):
+            try:
+                return float(v) * 100
+            except (ValueError, TypeError):
+                pass
+    bid, ask = m.get("bid_price"), m.get("ask_price")
+    if bid and ask:
+        try:
+            return ((float(bid) + float(ask)) / 2.0) * 100
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
 def fetch_positions() -> list[dict]:
     account_number = env("ROBINHOOD_ACCOUNT_NUMBER") or None
     raw = r.options.get_open_option_positions(account_number=account_number)
@@ -78,14 +105,17 @@ def fetch_positions() -> list[dict]:
         if not details:
             log.warning("could not fetch instrument %s, skipping", instrument_url)
             continue
+        option_id = instrument_url.rstrip("/").split("/")[-1]
         side_sign = -1 if p.get("type") == "short" else 1
+        current = fetch_market_price(option_id)
         positions.append({
             "underlying": details["chain_symbol"],
-            "expiration": details["expiration_date"],  # ISO YYYY-MM-DD
+            "expiration": details["expiration_date"],
             "strike": float(details["strike_price"]),
-            "type": details["type"][0].upper(),  # 'call' -> 'C', 'put' -> 'P'
+            "type": details["type"][0].upper(),
             "quantity": qty * side_sign,
             "avg_price": float(p.get("average_price") or 0),
+            "current": current,  # per-contract dollars (mark × 100)
         })
     return positions
 
@@ -216,26 +246,18 @@ def main() -> int:
     svc = sheets_service()
     ensure_tabs(svc, sheet_id, [POSITIONS_TAB, CONFIG_TAB, RECON_TAB])
 
-    # --- Match to Sheet1 first so we can use current prices in Positions tab ---
-    sheet_contracts = read_sheet1_contracts(svc, sheet_id)
-    matches, unmatched_pos, orphaned_rows = match(positions, sheet_contracts)
-    row_to_current = {s["row"]: s["current"] for s in sheet_contracts}
-    pos_to_row = {id(p): row for p, row in matches}
-
-    # --- Positions tab: human-readable view of Robinhood positions + current price + P/L ---
+    # --- Positions tab: live Robinhood positions + current mark + P/L ---
     pos_header = ["Ticker", "Strike", "Expiry", "Put/Call", "Avg Buying Price",
                   "No of Cons", "Current Price", "Profit/Loss"]
     pos_rows = []
     for p in positions:
-        avg_unsigned = abs(p["avg_price"])              # display as positive premium per contract
+        avg_unsigned = abs(p["avg_price"])
         qty_signed = int(p["quantity"]) if p["quantity"].is_integer() else p["quantity"]
-        matched_row = pos_to_row.get(id(p))
-        current = row_to_current.get(matched_row) if matched_row else None
+        current = p.get("current")
         if current is not None:
-            # P/L: long profits when current > entry; short profits when current < entry.
-            if p["quantity"] > 0:        # long
+            if p["quantity"] > 0:
                 pl = (current - avg_unsigned) * abs(p["quantity"])
-            else:                        # short
+            else:
                 pl = (avg_unsigned - current) * abs(p["quantity"])
             current_disp = round(current)
             pl_disp = round(pl)
@@ -248,6 +270,10 @@ def main() -> int:
         ])
     write_tab(svc, sheet_id, POSITIONS_TAB, [pos_header] + pos_rows)
     log.info("Wrote Positions tab: %d row(s)", len(pos_rows))
+
+    # --- Match to Sheet1 for Config + Reconciliation tabs (unchanged) ---
+    sheet_contracts = read_sheet1_contracts(svc, sheet_id)
+    matches, unmatched_pos, orphaned_rows = match(positions, sheet_contracts)
 
     cfg_header = ["Underlying", "Expiration", "Strike", "Type", "MainSheetRow"]
     cfg_rows = [[p["underlying"], p["expiration"], p["strike"], p["type"], row] for p, row in matches]
