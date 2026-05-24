@@ -38,7 +38,7 @@ POSITIONS_TAB = "Positions"
 CONFIG_TAB = "Config"
 RECON_TAB = "Reconciliation"
 MAIN_TAB = "Sheet1"
-SHEET1_SCAN_RANGE = "Sheet1!A1:B100"  # plenty for any realistic portfolio
+SHEET1_SCAN_RANGE = "Sheet1!A1:F100"  # A=Symbol, B=Expiration, F=Current price/contract
 
 
 def env(name: str, required: bool = False, default: str = "") -> str:
@@ -116,7 +116,18 @@ def ensure_tabs(svc, sheet_id: str, tab_names: list[str]) -> None:
 
 
 def write_tab(svc, sheet_id: str, tab: str, values: list[list]) -> None:
-    svc.spreadsheets().values().clear(spreadsheetId=sheet_id, range=f"{tab}!A:Z").execute()
+    # Look up the sheetId for this tab name (needed for formatting reset)
+    meta = svc.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    sheet_id_int = next(s["properties"]["sheetId"] for s in meta["sheets"]
+                        if s["properties"]["title"] == tab)
+    # Reset cell formatting in one shot, otherwise old column formats (like a date
+    # format inherited from a prior schema) make new numeric values display wrong.
+    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [{
+        "updateCells": {
+            "range": {"sheetId": sheet_id_int},
+            "fields": "userEnteredFormat,userEnteredValue",
+        }
+    }]}).execute()
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id, range=f"{tab}!A1",
         valueInputOption="USER_ENTERED", body={"values": values},
@@ -149,9 +160,10 @@ def parse_sheet_expiration(s: str) -> Optional[str]:
 
 
 def read_sheet1_contracts(svc, sheet_id: str) -> list[dict]:
-    """Pull (row, symbol, expiration) tuples from Sheet1. Filters to rows whose
-    column B actually parses as a date — skips the deposit log, totals row,
-    headers, etc."""
+    """Pull (row, symbol, expiration, current_price) tuples from Sheet1. Filters
+    to rows whose column B parses as a date — skips the deposit log, totals
+    row, headers, etc. current_price comes from column F (per-contract dollars,
+    populated daily by the price routine); None when blank/non-numeric."""
     resp = svc.spreadsheets().values().get(spreadsheetId=sheet_id, range=SHEET1_SCAN_RANGE).execute()
     out = []
     for i, row in enumerate(resp.get("values", []), start=1):
@@ -162,8 +174,14 @@ def read_sheet1_contracts(svc, sheet_id: str) -> list[dict]:
         if not sym or not exp_raw:
             continue
         if parse_sheet_expiration(exp_raw) is None:
-            continue  # not a contract row
-        out.append({"row": i, "symbol": sym, "expiration_raw": exp_raw})
+            continue
+        current = None
+        if len(row) >= 6:
+            try:
+                current = float(str(row[5]).replace(",", "").strip())
+            except (ValueError, TypeError):
+                current = None
+        out.append({"row": i, "symbol": sym, "expiration_raw": exp_raw, "current": current})
     return out
 
 
@@ -198,16 +216,38 @@ def main() -> int:
     svc = sheets_service()
     ensure_tabs(svc, sheet_id, [POSITIONS_TAB, CONFIG_TAB, RECON_TAB])
 
-    # --- Positions tab: mirror of Robinhood ---
-    pos_header = ["Underlying", "Expiration", "Strike", "Type", "Quantity", "AvgPrice", "OCC"]
-    pos_rows = [[p["underlying"], p["expiration"], p["strike"], p["type"],
-                 p["quantity"], p["avg_price"], occ_symbol(p)] for p in positions]
-    write_tab(svc, sheet_id, POSITIONS_TAB, [pos_header] + pos_rows)
-    log.info("Wrote Positions tab: %d row(s)", len(pos_rows))
-
-    # --- Match to Sheet1, write Config + Reconciliation ---
+    # --- Match to Sheet1 first so we can use current prices in Positions tab ---
     sheet_contracts = read_sheet1_contracts(svc, sheet_id)
     matches, unmatched_pos, orphaned_rows = match(positions, sheet_contracts)
+    row_to_current = {s["row"]: s["current"] for s in sheet_contracts}
+    pos_to_row = {id(p): row for p, row in matches}
+
+    # --- Positions tab: human-readable view of Robinhood positions + current price + P/L ---
+    pos_header = ["Ticker", "Strike", "Expiry", "Put/Call", "Avg Buying Price",
+                  "No of Cons", "Current Price", "Profit/Loss"]
+    pos_rows = []
+    for p in positions:
+        avg_unsigned = abs(p["avg_price"])              # display as positive premium per contract
+        qty_signed = int(p["quantity"]) if p["quantity"].is_integer() else p["quantity"]
+        matched_row = pos_to_row.get(id(p))
+        current = row_to_current.get(matched_row) if matched_row else None
+        if current is not None:
+            # P/L: long profits when current > entry; short profits when current < entry.
+            if p["quantity"] > 0:        # long
+                pl = (current - avg_unsigned) * abs(p["quantity"])
+            else:                        # short
+                pl = (avg_unsigned - current) * abs(p["quantity"])
+            current_disp = round(current)
+            pl_disp = round(pl)
+        else:
+            current_disp = ""
+            pl_disp = ""
+        pos_rows.append([
+            p["underlying"], p["strike"], p["expiration"], p["type"],
+            round(avg_unsigned, 2), qty_signed, current_disp, pl_disp,
+        ])
+    write_tab(svc, sheet_id, POSITIONS_TAB, [pos_header] + pos_rows)
+    log.info("Wrote Positions tab: %d row(s)", len(pos_rows))
 
     cfg_header = ["Underlying", "Expiration", "Strike", "Type", "MainSheetRow"]
     cfg_rows = [[p["underlying"], p["expiration"], p["strike"], p["type"], row] for p, row in matches]
