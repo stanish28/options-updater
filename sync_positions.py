@@ -58,8 +58,10 @@ def login() -> None:
 
 
 def fetch_positions() -> list[dict]:
-    raw = r.options.get_open_option_positions()
-    log.info("Robinhood returned %d open option position(s)", len(raw))
+    account_number = env("ROBINHOOD_ACCOUNT_NUMBER") or None
+    raw = r.options.get_open_option_positions(account_number=account_number)
+    log.info("Robinhood returned %d open option position(s) for account %s",
+             len(raw), account_number or "(default)")
     positions = []
     for p in raw:
         try:
@@ -147,11 +149,21 @@ def parse_sheet_expiration(s: str) -> Optional[str]:
 
 
 def read_sheet1_contracts(svc, sheet_id: str) -> list[dict]:
+    """Pull (row, symbol, expiration) tuples from Sheet1. Filters to rows whose
+    column B actually parses as a date — skips the deposit log, totals row,
+    headers, etc."""
     resp = svc.spreadsheets().values().get(spreadsheetId=sheet_id, range=SHEET1_SCAN_RANGE).execute()
     out = []
     for i, row in enumerate(resp.get("values", []), start=1):
-        if len(row) >= 2 and (row[0] or "").strip() and (row[1] or "").strip():
-            out.append({"row": i, "symbol": row[0].strip(), "expiration_raw": row[1].strip()})
+        if len(row) < 2:
+            continue
+        sym = (row[0] or "").strip()
+        exp_raw = (row[1] or "").strip()
+        if not sym or not exp_raw:
+            continue
+        if parse_sheet_expiration(exp_raw) is None:
+            continue  # not a contract row
+        out.append({"row": i, "symbol": sym, "expiration_raw": exp_raw})
     return out
 
 
