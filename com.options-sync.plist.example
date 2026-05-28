@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS LaunchAgent template for the options sync.
+
+  IMPORTANT: Before installing, replace ALL occurrences of /Users/YOURNAME
+  with your actual home directory path (run `echo $HOME` to see it).
+
+  Install:
+    cp com.options-sync.plist.example ~/Library/LaunchAgents/com.options-sync.plist
+    # edit the copy to replace /Users/YOURNAME everywhere
+    launchctl load -w ~/Library/LaunchAgents/com.options-sync.plist
+
+  Optional — make macOS wake the Mac at the scheduled time (Mac must be plugged in):
+    sudo pmset repeat wakeorpoweron MTWRF 05:55:00
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.options-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOURNAME/options-updater/sync</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOURNAME/options-updater</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>6</integer><key>Minute</key><integer>0</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/YOURNAME/options-updater/launchd.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOURNAME/options-updater/launchd.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>
