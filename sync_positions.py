@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import robin_stocks.robinhood as r
 from dotenv import load_dotenv
@@ -182,7 +184,11 @@ def build_sheet(positions: list[dict]) -> tuple[list[list], int]:
     bottom summing P/L."""
     rows: list[list] = []
 
-    # --- Header row + body ---
+    # --- Row 1: last-synced timestamp ---
+    now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+    rows.append([f"Last synced: {now_pt.strftime('%b %-d, %Y %-I:%M %p %Z')}"])
+
+    # --- Row 2: header; row 3+: body ---
     rows.append(["Ticker", "Strike", "Expiry", "Put/Call",
                  "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss", "% Change"])
 
@@ -241,9 +247,8 @@ def main() -> int:
     sheet_rows, total_row_idx = build_sheet(positions)
     sid = _sheet_id_int(svc, sheet_id, POSITIONS_TAB)
 
-    # Position table body + TOTAL row formatting (header at row 1 / idx 0,
-    # body at rows 2..total_row_idx, TOTAL at total_row_idx+1).
-    body_start = 1                              # zero-indexed = sheet row 2 (first position)
+    # Layout: row 1 (idx 0) = timestamp, row 2 (idx 1) = header, rows 3+ = body
+    body_start = 2                              # zero-indexed = sheet row 3 (first position)
     body_end = total_row_idx                    # exclusive end = TOTAL row index
     fmt_requests = [
         _num_format_req(sid, body_start, body_end, 4, NUMBER_2DEC_FMT),     # E avg
@@ -253,8 +258,13 @@ def main() -> int:
         _num_format_req(sid, total_row_idx, total_row_idx + 1, 7, SIGNED_CURRENCY_FMT),  # TOTAL P/L
         _num_format_req(sid, total_row_idx, total_row_idx + 1, 8, SIGNED_PCT_FMT),       # TOTAL %
     ]
-    # Bold: table header (row 0) and TOTAL row
-    for r in (0, total_row_idx):
+    # Italicize the timestamp row (idx 0), bold the table header (idx 1) and TOTAL row
+    fmt_requests.append({"repeatCell": {
+        "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
+        "cell": {"userEnteredFormat": {"textFormat": {"italic": True, "foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}}},
+        "fields": "userEnteredFormat.textFormat.italic,userEnteredFormat.textFormat.foregroundColor",
+    }})
+    for r in (1, total_row_idx):
         fmt_requests.append(_bold_row_req(sid, r))
 
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
