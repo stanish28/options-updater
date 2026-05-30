@@ -220,6 +220,14 @@ This section details critical technical failure states identified in real-world 
 >
 > **Solution**: Set the lock-waiting configuration `-o DPkg::Lock::Timeout=180` on all `apt-get` system commands. This instructs the package installer to wait up to 3 minutes for background locks to release before raising an exception.
 
+### 7.7 Expired Contracts Lingering on the Sheet (Expiration Day)
+> [!IMPORTANT]
+> **Issue**: On an options expiration date (every Friday, plus some intra-week dates), positions that expired *today* keep showing as open on the sheet after a sync, even though they're effectively closed.
+>
+> **Root Cause**: `get_open_option_positions` still returns expired contracts with their **full `quantity`** until Robinhood settles the expiration overnight. They are flagged by `pending_expiration_quantity` being equal to the quantity. A naive `if quantity == 0: continue` filter never skips them.
+>
+> **Solution**: In `fetch_positions()`, compute the effective quantity as `quantity - pending_expiration_quantity` before the zero-check, so fully-expiring positions drop off immediately and partially-expiring ones show their remaining size. (Implemented 2026-05-29.)
+
 ---
 
 ## 8. High-Impact Future Improvements

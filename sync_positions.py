@@ -88,6 +88,11 @@ def fetch_positions(account_number: Optional[str]) -> list[dict]:
     positions = []
     for p in raw:
         qty = _as_float(p.get("quantity")) or 0.0
+        # Contracts that expired today are still returned with their full
+        # quantity until Robinhood settles the expiration overnight, but are
+        # flagged via pending_expiration_quantity. Subtract those so expired
+        # positions drop off the sheet immediately instead of lingering.
+        qty -= _as_float(p.get("pending_expiration_quantity")) or 0.0
         if qty == 0:
             continue
         instrument_url = p.get("option")
