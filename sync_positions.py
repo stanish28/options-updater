@@ -3,9 +3,8 @@
 Run from the Mac terminal whenever you want a fresh view of your portfolio.
 Logs into Robinhood (prompts for SMS/MFA the first time; session is cached
 in ~/.tokens/robinhood.pickle so subsequent runs go straight through),
-pulls the account summary + open option positions from the configured
-account, and writes everything to the **Positions** tab of the Google
-Sheet.
+pulls the open option positions from the configured account, and writes
+them to the **Positions** tab of the Google Sheet.
 
 Sheet1 is untouched — that stays your hand-curated history. The Positions
 tab is the live view, rewritten end-to-end on every run.
@@ -264,8 +263,8 @@ def main() -> int:
         "cell": {"userEnteredFormat": {"textFormat": {"italic": True, "foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}}},
         "fields": "userEnteredFormat.textFormat.italic,userEnteredFormat.textFormat.foregroundColor",
     }})
-    for r in (1, total_row_idx):
-        fmt_requests.append(_bold_row_req(sid, r))
+    for row_idx in (1, total_row_idx):
+        fmt_requests.append(_bold_row_req(sid, row_idx))
 
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
     log.info("Wrote Positions tab: %d position(s) + totals", len(positions))

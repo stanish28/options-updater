@@ -15,7 +15,7 @@ With a `Last synced: ...` timestamp at the top, positions sorted by expiry ascen
 ## Prerequisites
 
 - macOS or Linux (Windows untested; should work in WSL)
-- **Python 3.11+** — needed for `truststore` and `zoneinfo`
+- **Python 3.9+** — needed for `zoneinfo` (stdlib timezone support)
 - A Google account
 - A Robinhood account with open option positions
 
@@ -141,7 +141,6 @@ The machine must be on at the scheduled time. Cron does not wake sleeping hardwa
 |---|---|
 | `Operation not permitted` from launchd | macOS TCC blocks Desktop/Documents folders — keep the project in `~/` not `~/Desktop/` |
 | Robinhood `Authentication required` on every run | Session expired — run `./sync` from terminal once, complete MFA, cached session resumes |
-| `ModuleNotFoundError: truststore` | Python too old; need 3.11+ |
 | Strike column shows dates like `1900-01-03` | Old write left a stale format. Script auto-resets format each run — just run `./sync` again |
 | Positions count seems wrong | Check `ROBINHOOD_ACCOUNT_NUMBER` — multi-account logins default to one account unless you specify |
 | `Last synced` shows the wrong time | Timezone defaults to your machine's local time. If running headless server, set the OS timezone or change `ZoneInfo("America/Los_Angeles")` in `sync_positions.py` |

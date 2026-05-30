@@ -8,3 +8,6 @@ __pycache__/
 venv/
 .DS_Store
 launchd.log
+secrets.tar.gz
+*.tar.gz
+*.pickle

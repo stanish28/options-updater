@@ -1,5 +1,5 @@
 #!/bin/bash
-# Convenience wrapper: run from anywhere with `~/Desktop/options_updater/sync`
+# Convenience wrapper: run from anywhere with `/path/to/options-updater/sync`
 # (or add this directory to PATH for just `sync`).
 set -e
 cd "$(dirname "$0")"
