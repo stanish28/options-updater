@@ -152,11 +152,11 @@ The system supports two independent scheduling methodologies:
 
 ### 6.2 Cloud Cron Schedule (Autonomous Server Scheduling - Recommended)
 *   **Daemon Configuration**: Managed via the user `crontab` on a persistent Virtual Private Server (VPS) such as Google Cloud Compute Engine or AWS EC2.
-*   **Timezone**: The VM clock is set to `America/Los_Angeles` (`sudo timedatectl set-timezone America/Los_Angeles`), so cron tracks **6:00 AM PT year-round** through DST transitions. Do **not** hardcode a UTC offset in the cron expression — that drifts by an hour between PST and PDT.
-*   **Trigger Schedule**: Executes Mon-Fri at **6:00 AM PT**.
+*   **Timezone**: The VM clock is set to `America/Los_Angeles` (`sudo timedatectl set-timezone America/Los_Angeles`), so cron tracks **PT year-round** through DST transitions. Do **not** hardcode a UTC offset in the cron expression — that drifts by an hour between PST and PDT.
+*   **Trigger Schedule**: Executes Mon-Fri at **6:00 AM and 12:00 PM PT** (pre-market refresh + midday refresh).
 *   **Cron Entry**:
     ```cron
-    0 6 * * 1-5 cd /home/tanishshah/options-updater && ./sync >> launchd.log 2>&1
+    0 6,12 * * 1-5 cd /home/tanishshah/options-updater && ./sync >> launchd.log 2>&1
     ```
 *   **Benefit**: 100% reliable background execution without depending on local hardware power states, sleep settings, or home Wi-Fi networks.
 

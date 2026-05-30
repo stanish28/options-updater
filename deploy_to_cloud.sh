@@ -86,14 +86,14 @@ gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
 echo -e "${GREEN}Remote diagnostic sync executed successfully!${NC}"
 
 # 7. Programmatically Install Weekday Cron Job
-echo -e "\n${YELLOW}[7/7] Setting VM timezone to PT and installing weekday Cron job (6:00 AM PT)...${NC}"
+echo -e "\n${YELLOW}[7/7] Setting VM timezone to PT and installing weekday Cron jobs (6:00 AM + 12:00 PM PT)...${NC}"
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
   # Set the VM clock to Pacific so cron tracks 6 AM PT year-round (handles DST).
   sudo timedatectl set-timezone America/Los_Angeles
 
   # Fetch home directory programmatically
   HOME_DIR=\$(eval echo ~\$USER)
-  CRON_JOB=\"0 6 * * 1-5 cd \$HOME_DIR/options-updater && ./sync >> launchd.log 2>&1\"
+  CRON_JOB=\"0 6,12 * * 1-5 cd \$HOME_DIR/options-updater && ./sync >> launchd.log 2>&1\"
 
   # Replace any existing entry for this project (match the real command, not a guessed path).
   (crontab -l 2>/dev/null | grep -Fv \"options-updater && ./sync\" || true; echo \"\$CRON_JOB\") | crontab -
