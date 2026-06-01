@@ -210,6 +210,40 @@ def _bold_row_req(sid: int, row: int) -> dict:
     }}
 
 
+_TABLE_COLS = 9  # columns A–I
+
+
+def _range(sid: int, r0: int, r1: int, c0: int = 0, c1: int = _TABLE_COLS) -> dict:
+    return {"sheetId": sid, "startRowIndex": r0, "endRowIndex": r1,
+            "startColumnIndex": c0, "endColumnIndex": c1}
+
+
+def _align_center_req(sid: int, r0: int, r1: int) -> dict:
+    return {"repeatCell": {
+        "range": _range(sid, r0, r1),
+        "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER",
+                                       "verticalAlignment": "MIDDLE"}},
+        "fields": "userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment",
+    }}
+
+
+def _header_fill_req(sid: int, row: int) -> dict:
+    return {"repeatCell": {
+        "range": _range(sid, row, row + 1),
+        "cell": {"userEnteredFormat": {"backgroundColor": {"red": 0.85, "green": 0.89, "blue": 0.95}}},
+        "fields": "userEnteredFormat.backgroundColor",
+    }}
+
+
+def _border_grid_req(sid: int, r0: int, r1: int) -> dict:
+    line = {"style": "SOLID", "color": {"red": 0.7, "green": 0.7, "blue": 0.7}}
+    return {"updateBorders": {
+        "range": _range(sid, r0, r1),
+        "top": line, "bottom": line, "left": line, "right": line,
+        "innerHorizontal": line, "innerVertical": line,
+    }}
+
+
 def write_tab(svc, sheet_id: str, tab: str, values: list[list],
               format_requests: Optional[list[dict]] = None) -> None:
     """Reset formatting+values on the tab then write fresh. If format_requests is
@@ -416,6 +450,18 @@ def main() -> int:
     }})
     for row_idx in meta["bold_rows"]:
         fmt_requests.append(_bold_row_req(sid, row_idx))
+
+    # Centered text across the table, header fills, and grid borders on each block.
+    last_row = meta["stock_total"] or meta["opt_total"]
+    fmt_requests.append(_align_center_req(sid, 1, last_row + 1))
+    fmt_requests.append(_header_fill_req(sid, 1))                          # options header
+    fmt_requests.append(_border_grid_req(sid, 1, meta["opt_body"][1]))     # options header + body
+    fmt_requests.append(_border_grid_req(sid, meta["opt_total"], meta["opt_total"] + 1))
+    if meta["stock_body"]:
+        stock_header = meta["stock_body"][0] - 1
+        fmt_requests.append(_header_fill_req(sid, stock_header))
+        fmt_requests.append(_border_grid_req(sid, stock_header, meta["stock_body"][1]))
+        fmt_requests.append(_border_grid_req(sid, meta["stock_total"], meta["stock_total"] + 1))
 
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
     log.info("Wrote Positions tab: %d option(s), %d stock(s) + totals", len(positions), len(stocks))

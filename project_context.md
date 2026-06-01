@@ -136,9 +136,13 @@ The sheet contains 9 columns, structured as follows:
 *   *Note: `[Color10]` corresponds to Google Sheets' native dark forest green, which is much more readable than standard neon green.*
 
 ### 5.3 Text Styling & Typography
-*   **Row 1**: Displays `Last synced: May 28, 2026 6:05 AM PDT`. Italicized, 10pt size, styled in medium grey (`#666666`).
-*   **Row 2**: Table headers. Bolded.
-*   **Row N (Total)**: Bolds the "TOTAL" label, the Total P/L cell, and the Total % Change cell.
+*   **Row 1**: Displays `Last synced: May 28, 2026 6:05 AM PDT`. Italicized, medium grey, left-aligned.
+*   **Row 2**: Table headers. Bolded, centered, light blue-grey fill (`rgb 0.85,0.89,0.95`).
+*   **Total / STOCK TOTAL rows**: Bolded.
+*   **Centering**: Every cell from the header row down (cols A–I) is horizontally centered + vertically middle-aligned via a `repeatCell` over the whole table region.
+*   **Borders**: A solid grey grid (`updateBorders`, all inner + outer) is drawn around each block — the options header+body, the options TOTAL row, and (if present) the STOCKS header+body and STOCK TOTAL row. Blank spacer rows are left unbordered as visual separators.
+*   **Reset behaviour**: The per-run whole-sheet `updateCells` reset (fields `userEnteredFormat,userEnteredValue`) clears all prior fills/borders/alignment before re-applying, so formatting never accumulates or goes stale.
+*   Helpers: `_align_center_req`, `_header_fill_req`, `_border_grid_req`, `_range` (all take a `sheetId` + row range).
 
 ### 5.4 Summary Tab & Cash in Hand Surgical Update
 In addition to the options positions tracker, the script performs a highly targeted surgical write to update the `Summary` tab with your live cash balance:
