@@ -170,6 +170,13 @@ The system supports two independent scheduling methodologies:
     ```
 *   **Benefit**: 100% reliable background execution without depending on local hardware power states, sleep settings, or home Wi-Fi networks.
 
+### 6.3 On-Demand Trigger via Telegram Bot (Any Device)
+*   **Component**: `telegram_bot.py` — a stdlib-only long-polling bot that runs as a systemd service (`options-sync-bot.service`) on the GCP VM, alongside the cron schedule.
+*   **Purpose**: Trigger a sync on demand from any device (phone, laptop, web Telegram) without SSH or open firewall ports. The bot polls Telegram outbound, so no inbound port needs to be exposed.
+*   **Commands**: `/sync` runs `./sync` and replies with a short result summary; `/id` reports the sender's chat ID (works without auth, for lockdown setup); `/start` / `/help` show usage.
+*   **Security**: Locked to a single chat via `TELEGRAM_ALLOWED_CHAT_ID` in `.env`. Any other chat is refused. If that var is unset the bot refuses all `/sync` requests (fails closed). `TELEGRAM_BOT_TOKEN` and the chat ID live only in the gitignored `.env`.
+*   **Service management**: `sudo systemctl {status,restart,stop} options-sync-bot`; live logs via `journalctl -u options-sync-bot -f`. Auto-restarts on crash and on VM reboot.
+
 ---
 
 ## 7. Known Failure Modes & AI Troubleshooting

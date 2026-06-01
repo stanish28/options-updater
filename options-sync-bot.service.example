@@ -1,0 +1,27 @@
+# systemd unit for the Telegram sync-trigger bot (runs on the GCP VM).
+#
+# Install (replace YOURNAME with the VM user, e.g. `whoami`):
+#   sudo cp options-sync-bot.service.example /etc/systemd/system/options-sync-bot.service
+#   sudo sed -i "s/YOURNAME/$(whoami)/g" /etc/systemd/system/options-sync-bot.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now options-sync-bot
+#   systemctl status options-sync-bot      # should be "active (running)"
+#   journalctl -u options-sync-bot -f      # live logs
+#
+# Requires TELEGRAM_BOT_TOKEN and TELEGRAM_ALLOWED_CHAT_ID in the project .env.
+
+[Unit]
+Description=Options Sync Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOURNAME
+WorkingDirectory=/home/YOURNAME/options-updater
+ExecStart=/home/YOURNAME/options-updater/.venv/bin/python /home/YOURNAME/options-updater/telegram_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
