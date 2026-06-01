@@ -132,6 +132,38 @@ def fetch_positions(account_number: Optional[str]) -> list[dict]:
     return positions
 
 
+def fetch_stock_positions(account_number: Optional[str]) -> list[dict]:
+    """Return open stock/share positions: list of dicts with symbol, quantity
+    (shares), avg_cost (per share) and current (per share). Current prices are
+    fetched in a single batched API call."""
+    try:
+        raw = r.account.get_open_stock_positions(account_number=account_number)
+    except Exception as e:
+        log.warning("get_open_stock_positions failed: %s", e)
+        return []
+    out: list[dict] = []
+    for s in raw or []:
+        qty = _as_float(s.get("quantity")) or 0.0
+        if qty == 0:
+            continue
+        inst = r.stocks.get_instrument_by_url(s["instrument"])
+        out.append({
+            "symbol": inst.get("symbol", "?"),
+            "quantity": qty,
+            "avg_cost": _as_float(s.get("average_buy_price")) or 0.0,
+            "current": None,
+        })
+    if out:
+        try:
+            prices = r.stocks.get_latest_price([d["symbol"] for d in out])
+            for d, pr in zip(out, prices):
+                d["current"] = _as_float(pr)
+        except Exception as e:
+            log.warning("stock price fetch failed: %s", e)
+    log.info("Robinhood returned %d open stock position(s)", len(out))
+    return out
+
+
 def sheets_service():
     creds = Credentials.from_service_account_file(
         env("GOOGLE_APPLICATION_CREDENTIALS", required=True), scopes=SHEETS_SCOPES
@@ -238,62 +270,107 @@ def write_summary_metric(svc, sheet_id: str, cell: str, val: Optional[float], me
     log.info("Wrote Summary!%s %s: $%s", cell, metric_name, f"{round(val):,}")
 
 
-def build_sheet(positions: list[dict]) -> tuple[list[list], int]:
-    """Build the Positions tab content. Returns (rows, total_pl_row_index).
+def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], dict]:
+    """Build the Positions tab content. Returns (rows, meta) where meta carries
+    the row ranges main() needs to apply number formats and bolding.
 
-    Positions are sorted by expiry (ascending) and then alphabetically by ticker
-    (ascending). A TOTAL row is appended at the bottom summing P/L."""
+    Options are sorted by expiry (ascending) then ticker, followed by a TOTAL
+    row. If there are open stock positions, a STOCKS section + STOCK TOTAL row
+    is appended below the options."""
     rows: list[list] = []
 
     # --- Row 1: last-synced timestamp ---
     now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
     rows.append([f"Last synced: {now_pt.strftime('%b %-d, %Y %-I:%M %p %Z')}"])
 
-    # --- Row 2: header; row 3+: body ---
+    # --- Row 2: header; row 3+: options body ---
     rows.append(["Ticker", "Strike", "Expiry", "Put/Call",
                  "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss", "% Change"])
 
-    sorted_positions = sorted(positions, key=lambda p: (p["expiration"], p["underlying"]))
-
+    opt_body_start = len(rows)
     total_pl = 0.0
     total_cost_basis = 0.0
     have_any_pl = False
-    for p in sorted_positions:
+    for p in sorted(positions, key=lambda p: (p["expiration"], p["underlying"])):
         avg_unsigned = abs(p["avg_price"])
         qty = p["quantity"]
         qty_signed = int(qty) if qty.is_integer() else qty
         current = p.get("current")
         if current is not None:
-            if qty > 0:
-                pl = (current - avg_unsigned) * abs(qty)
-            else:
-                pl = (avg_unsigned - current) * abs(qty)
+            pl = (current - avg_unsigned) * abs(qty) if qty > 0 else (avg_unsigned - current) * abs(qty)
             cost_basis = avg_unsigned * abs(qty)
-            pct_change = pl / cost_basis if cost_basis > 0 else None
-            current_disp = round(current, 2)
-            pl_disp = round(pl, 2)
-            pct_disp = pct_change if pct_change is not None else ""
+            pct_change = pl / cost_basis if cost_basis > 0 else ""
+            current_disp, pl_disp, pct_disp = round(current, 2), round(pl, 2), pct_change
             total_pl += pl
             total_cost_basis += cost_basis
             have_any_pl = True
         else:
-            current_disp = ""
-            pl_disp = ""
-            pct_disp = ""
+            current_disp = pl_disp = pct_disp = ""
         rows.append([
             p["underlying"], p["strike"], p["expiration"], p["type"],
             round(avg_unsigned, 2), qty_signed, current_disp, pl_disp, pct_disp,
         ])
+    opt_body_end = len(rows)
 
-    # --- Totals row at the bottom (blank spacer + TOTAL row) ---
+    # --- Options TOTAL row (blank spacer + TOTAL) ---
     rows.append([])
-    total_row_idx = len(rows)        # 1-based position of TOTAL row when written
+    opt_total_idx = len(rows)
     if have_any_pl:
         total_pct = total_pl / total_cost_basis if total_cost_basis > 0 else ""
         rows.append(["TOTAL", "", "", "", "", "", "", round(total_pl, 2), total_pct])
     else:
         rows.append(["TOTAL", "", "", "", "", "", "", "", ""])
-    return rows, total_row_idx
+
+    meta: dict = {
+        "opt_body": (opt_body_start, opt_body_end),
+        "opt_total": opt_total_idx,
+        "stock_body": None,
+        "stock_total": None,
+        "bold_rows": [1, opt_total_idx],
+    }
+
+    # --- STOCKS section (only if there are open share positions) ---
+    if stocks:
+        rows.append([])
+        stock_header_idx = len(rows)
+        rows.append(["STOCKS", "", "", "", "Avg Cost", "Shares",
+                     "Current Price", "Profit/Loss", "% Change"])
+        stock_body_start = len(rows)
+        s_total_pl = 0.0
+        s_total_cost = 0.0
+        s_have = False
+        for s in sorted(stocks, key=lambda x: x["symbol"]):
+            avg = s["avg_cost"]
+            qty = s["quantity"]
+            qty_disp = int(qty) if float(qty).is_integer() else round(qty, 4)
+            current = s.get("current")
+            if current is not None:
+                pl = (current - avg) * qty
+                cost = avg * qty
+                pct = pl / cost if cost > 0 else ""
+                current_disp, pl_disp, pct_disp = round(current, 2), round(pl, 2), pct
+                s_total_pl += pl
+                s_total_cost += cost
+                s_have = True
+            else:
+                current_disp = pl_disp = pct_disp = ""
+            rows.append([s["symbol"], "", "", "", round(avg, 2), qty_disp,
+                         current_disp, pl_disp, pct_disp])
+        stock_body_end = len(rows)
+
+        rows.append([])
+        stock_total_idx = len(rows)
+        if s_have:
+            s_total_pct = s_total_pl / s_total_cost if s_total_cost > 0 else ""
+            rows.append(["STOCK TOTAL", "", "", "", "", "", "", round(s_total_pl, 2), s_total_pct])
+        else:
+            rows.append(["STOCK TOTAL", "", "", "", "", "", "", "", ""])
+
+        meta["stock_body"] = (stock_body_start, stock_body_end)
+        meta["stock_total"] = stock_total_idx
+        meta["bold_rows"].extend([stock_header_idx, stock_total_idx])
+
+    return rows, meta
 
 
 def main() -> int:
@@ -302,36 +379,46 @@ def main() -> int:
 
     login()
     positions = fetch_positions(account_number)
+    stocks = fetch_stock_positions(account_number)
     buying_power, cash = fetch_account_balances(account_number)
 
     svc = sheets_service()
     ensure_tab(svc, sheet_id, POSITIONS_TAB)
     ensure_tab(svc, sheet_id, SUMMARY_TAB)
-    sheet_rows, total_row_idx = build_sheet(positions)
+    sheet_rows, meta = build_sheet(positions, stocks)
     sid = _sheet_id_int(svc, sheet_id, POSITIONS_TAB)
 
-    # Layout: row 1 (idx 0) = timestamp, row 2 (idx 1) = header, rows 3+ = body
-    body_start = 2                              # zero-indexed = sheet row 3 (first position)
-    body_end = total_row_idx                    # exclusive end = TOTAL row index
-    fmt_requests = [
-        _num_format_req(sid, body_start, body_end, 4, NUMBER_2DEC_FMT),     # E avg
-        _num_format_req(sid, body_start, body_end, 6, NUMBER_2DEC_FMT),     # G current
-        _num_format_req(sid, body_start, body_end, 7, SIGNED_CURRENCY_FMT), # H P/L
-        _num_format_req(sid, body_start, body_end, 8, SIGNED_PCT_FMT),      # I % change
-        _num_format_req(sid, total_row_idx, total_row_idx + 1, 7, SIGNED_CURRENCY_FMT),  # TOTAL P/L
-        _num_format_req(sid, total_row_idx, total_row_idx + 1, 8, SIGNED_PCT_FMT),       # TOTAL %
-    ]
-    # Italicize the timestamp row (idx 0), bold the table header (idx 1) and TOTAL row
+    # Number formats: E avg + G current as 2-decimals, H P/L signed currency,
+    # I % change signed percent — applied to each body block and total row.
+    def body_fmts(start, end):
+        return [
+            _num_format_req(sid, start, end, 4, NUMBER_2DEC_FMT),     # E
+            _num_format_req(sid, start, end, 6, NUMBER_2DEC_FMT),     # G
+            _num_format_req(sid, start, end, 7, SIGNED_CURRENCY_FMT), # H
+            _num_format_req(sid, start, end, 8, SIGNED_PCT_FMT),      # I
+        ]
+
+    def total_fmts(idx):
+        return [
+            _num_format_req(sid, idx, idx + 1, 7, SIGNED_CURRENCY_FMT),  # H
+            _num_format_req(sid, idx, idx + 1, 8, SIGNED_PCT_FMT),       # I
+        ]
+
+    fmt_requests = body_fmts(*meta["opt_body"]) + total_fmts(meta["opt_total"])
+    if meta["stock_body"]:
+        fmt_requests += body_fmts(*meta["stock_body"]) + total_fmts(meta["stock_total"])
+
+    # Italicize the timestamp row (idx 0); bold headers + total rows.
     fmt_requests.append({"repeatCell": {
         "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
         "cell": {"userEnteredFormat": {"textFormat": {"italic": True, "foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}}},
         "fields": "userEnteredFormat.textFormat.italic,userEnteredFormat.textFormat.foregroundColor",
     }})
-    for row_idx in (1, total_row_idx):
+    for row_idx in meta["bold_rows"]:
         fmt_requests.append(_bold_row_req(sid, row_idx))
 
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
-    log.info("Wrote Positions tab: %d position(s) + totals", len(positions))
+    log.info("Wrote Positions tab: %d option(s), %d stock(s) + totals", len(positions), len(stocks))
 
     # Surgically write cash in hand into Summary tab
     write_summary_metric(svc, sheet_id, SUMMARY_CASH_CELL, cash, "cash in hand")

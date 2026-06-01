@@ -149,6 +149,16 @@ In addition to the options positions tracker, the script performs a highly targe
 *   **Automatic Cell Coordinate Parsing**: The script contains a custom parsing function (`write_summary_metric`) that takes the alphanumeric cell coordinate string (e.g. `"H2"`), isolates the column letters (`"H"`) and row numbers (`"2"`), converts them to 0-indexed integer coordinates (row `1`, column `7` in a 0-indexed grid), and writes the rounded value.
 *   **Currency Formatting**: The script dynamically issues a Sheets API `repeatCell` batchUpdate to apply a custom integer currency format (`"$"#,##0`) to that single target cell, rendering the cash balance as a rounded dollar value (e.g. `$33,306`).
 
+### 5.5 STOCKS Section (Open Share Positions)
+Below the options table and its TOTAL row, the script appends a **STOCKS** section listing open share positions (e.g. FLNC ×400), pulled via `fetch_stock_positions()` (`r.account.get_open_stock_positions`, with one batched `get_latest_price` call for all tickers).
+*   Layout reuses the same 9 columns: `A`=Ticker, `E`=Avg Cost (per share), `F`=Shares, `G`=Current Price (per share), `H`=Profit/Loss, `I`=% Change. Columns B–D are blank for stocks.
+*   P/L per stock = `(current - avg_cost) × shares`; a bold **STOCK TOTAL** row sums it.
+*   `build_sheet(positions, stocks)` returns `(rows, meta)`; `meta` carries the row ranges (`opt_body`, `opt_total`, `stock_body`, `stock_total`, `bold_rows`) so `main()` applies number formats/bolding generically to both blocks.
+*   Bhuvan account only (same multi-account limitation as options).
+
+### 5.6 Closed Positions Tab — Intentionally Manual
+The `Closed Positions` tab (Ticker | Realized Profit/Loss, one row per closed trade) is **hand-maintained and never touched by the script** (user decision, 2026-06-01). Rationale: Robinhood does not store realized P/L on closed positions (`average_price` resets to 0 once closed), so it would have to be reconstructed from order history — which **misses expirations** (selling puts that expire worthless generates no closing order, only an event) and **cannot cover the individual sub-account** (not API-accessible without its account number). Some rows in the tab are from that individual account. **Do not automate this tab** unless the user explicitly revisits the decision.
+
 ---
 
 ## 6. Automation & Scheduling Lifecycle
