@@ -30,6 +30,8 @@ log = logging.getLogger("sync")
 
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 POSITIONS_TAB = "Positions"
+SUMMARY_TAB = "Summary"
+SUMMARY_CASH_CELL = "H2"          # surgical write — does not touch other cells on the Summary tab
 
 
 def env(name: str, required: bool = False, default: str = "") -> str:
@@ -79,6 +81,21 @@ def fetch_market_price(option_id: str) -> Optional[float]:
         except (ValueError, TypeError):
             pass
     return None
+
+
+def fetch_account_balances(account_number: Optional[str]) -> tuple[Optional[float], Optional[float]]:
+    """Return (buying_power, cash_balance) in dollars from the account profile,
+    or (None, None) if the API call fails. Includes pending instant deposits."""
+    try:
+        ap = r.profiles.load_account_profile(account_number=account_number)
+    except Exception as e:
+        log.warning("load_account_profile failed: %s", e)
+        return None, None
+    if not ap:
+        return None, None
+    buying_power = _as_float(ap.get("buying_power"))
+    cash = _as_float(ap.get("cash"))
+    return buying_power, cash
 
 
 def fetch_positions(account_number: Optional[str]) -> list[dict]:
@@ -181,11 +198,51 @@ def write_tab(svc, sheet_id: str, tab: str, values: list[list],
                                        body={"requests": format_requests}).execute()
 
 
+def write_summary_metric(svc, sheet_id: str, cell: str, val: Optional[float], metric_name: str) -> None:
+    """Surgically write a numeric value into a specific cell on the Summary tab
+    and format it as currency with no decimals (e.g. $33,306). Does not touch
+    any other cells on the tab."""
+    if val is None:
+        log.warning("Skipping Summary!%s write (%s unavailable)", cell, metric_name)
+        return
+    
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"{SUMMARY_TAB}!{cell}",
+        valueInputOption="USER_ENTERED",
+        body={"values": [[round(val)]]},
+    ).execute()
+    
+    # Extract row and column index from cell coordinate (e.g. "G2" -> row 1, col 6)
+    col_str = "".join([c for c in cell if c.isalpha()])
+    row_str = "".join([c for c in cell if c.isdigit()])
+    
+    col_idx = 0
+    for char in col_str:
+        col_idx = col_idx * 26 + (ord(char.upper()) - ord('A') + 1)
+    col_idx -= 1 # 0-indexed
+    
+    row_idx = int(row_str) - 1 # 0-indexed
+    
+    sid = _sheet_id_int(svc, sheet_id, SUMMARY_TAB)
+    
+    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [{
+        "repeatCell": {
+            "range": {"sheetId": sid, 
+                      "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
+                      "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1},
+            "cell": {"userEnteredFormat": {"numberFormat": {"type": "CURRENCY", "pattern": '"$"#,##0'}}},
+            "fields": "userEnteredFormat.numberFormat",
+        }
+    }]}).execute()
+    log.info("Wrote Summary!%s %s: $%s", cell, metric_name, f"{round(val):,}")
+
+
 def build_sheet(positions: list[dict]) -> tuple[list[list], int]:
     """Build the Positions tab content. Returns (rows, total_pl_row_index).
 
-    Positions are sorted by expiry (ascending). A TOTAL row is appended at the
-    bottom summing P/L."""
+    Positions are sorted by expiry (ascending) and then alphabetically by ticker
+    (ascending). A TOTAL row is appended at the bottom summing P/L."""
     rows: list[list] = []
 
     # --- Row 1: last-synced timestamp ---
@@ -196,7 +253,7 @@ def build_sheet(positions: list[dict]) -> tuple[list[list], int]:
     rows.append(["Ticker", "Strike", "Expiry", "Put/Call",
                  "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss", "% Change"])
 
-    sorted_positions = sorted(positions, key=lambda p: p["expiration"])
+    sorted_positions = sorted(positions, key=lambda p: (p["expiration"], p["underlying"]))
 
     total_pl = 0.0
     total_cost_basis = 0.0
@@ -245,9 +302,11 @@ def main() -> int:
 
     login()
     positions = fetch_positions(account_number)
+    buying_power, cash = fetch_account_balances(account_number)
 
     svc = sheets_service()
     ensure_tab(svc, sheet_id, POSITIONS_TAB)
+    ensure_tab(svc, sheet_id, SUMMARY_TAB)
     sheet_rows, total_row_idx = build_sheet(positions)
     sid = _sheet_id_int(svc, sheet_id, POSITIONS_TAB)
 
@@ -273,6 +332,10 @@ def main() -> int:
 
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
     log.info("Wrote Positions tab: %d position(s) + totals", len(positions))
+
+    # Surgically write cash in hand into Summary tab
+    write_summary_metric(svc, sheet_id, SUMMARY_CASH_CELL, cash, "cash in hand")
+
     return 0
 
 

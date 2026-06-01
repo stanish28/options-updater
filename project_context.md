@@ -102,6 +102,7 @@ To ensure a robust "current market price", the script uses a fallback method ins
 4.  Option prices from Robinhood are per-share (e.g. $1.50). The script multiplies by 100 to calculate the per-contract value.
 
 ### 4.3 Total Portfolio Summary
+*   **Positions Sorting Order**: Options positions are listed in a strict, deterministic sequence: first sorted by expiration date (ascending), and then sorted alphabetically by the underlying ticker symbol (ascending) if multiple contracts share the same expiration date.
 *   A blank spacer row is added at the end of individual options rows, followed by a **TOTAL** row.
 *   The total P/L is the sum of all individual option P/Ls.
 *   The total percentage change is calculated as:
@@ -138,6 +139,15 @@ The sheet contains 9 columns, structured as follows:
 *   **Row 1**: Displays `Last synced: May 28, 2026 6:05 AM PDT`. Italicized, 10pt size, styled in medium grey (`#666666`).
 *   **Row 2**: Table headers. Bolded.
 *   **Row N (Total)**: Bolds the "TOTAL" label, the Total P/L cell, and the Total % Change cell.
+
+### 5.4 Summary Tab & Cash in Hand Surgical Update
+In addition to the options positions tracker, the script performs a highly targeted surgical write to update the `Summary` tab with your live cash balance:
+*   **Target Tab**: `Summary`
+*   **Target Cell**: `H2`
+*   **Metric Written**: Cash in hand (cash balance / portfolio cash) from the Robinhood account profile.
+*   **Surgical Behavior**: Unlike the `Positions` tab (which is wiped clean and fully rebuilt on every run), the `Summary` tab is hand-curated and hand-maintained. The script performs a highly targeted single-cell value update on cell `H2` only, leaving the rest of the Summary tab entirely untouched.
+*   **Automatic Cell Coordinate Parsing**: The script contains a custom parsing function (`write_summary_metric`) that takes the alphanumeric cell coordinate string (e.g. `"H2"`), isolates the column letters (`"H"`) and row numbers (`"2"`), converts them to 0-indexed integer coordinates (row `1`, column `7` in a 0-indexed grid), and writes the rounded value.
+*   **Currency Formatting**: The script dynamically issues a Sheets API `repeatCell` batchUpdate to apply a custom integer currency format (`"$"#,##0`) to that single target cell, rendering the cash balance as a rounded dollar value (e.g. `$33,306`).
 
 ---
 
