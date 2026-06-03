@@ -303,22 +303,18 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
                  "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss",
                  "% Change", "Allocation"])
 
-    # Allocation denominator: total current market value across all positions
-    # (options + stocks). Each row's allocation = its value / this total, so they
-    # sum to ~100%. Short options use the absolute buyback value as their value.
-    def _opt_value(p: dict) -> float:
-        c = p.get("current")
-        return abs(c) * abs(p["quantity"]) if c is not None else 0.0
+    # Allocation denominator: total initial invested amount across all positions
+    # (options + stocks). Each row's allocation = its cost basis / this total.
+    def _opt_cost(p: dict) -> float:
+        return abs(p["avg_price"]) * abs(p["quantity"])
 
-    def _stk_value(s: dict) -> float:
-        c = s.get("current")
-        return c * s["quantity"] if c is not None else 0.0
+    def _stk_cost(s: dict) -> float:
+        return s["avg_cost"] * s["quantity"]
 
-    total_value = (sum(_opt_value(p) for p in positions)
-                   + sum(_stk_value(s) for s in stocks))
+    total_cost = sum(_opt_cost(p) for p in positions) + sum(_stk_cost(s) for s in stocks)
+    opt_cost_sum = sum(_opt_cost(p) for p in positions)
 
     opt_body_start = len(rows)
-    opt_value_sum = 0.0
     total_pl = 0.0
     total_cost_basis = 0.0
     have_any_pl = False
@@ -326,20 +322,18 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
         avg_unsigned = abs(p["avg_price"])
         qty = p["quantity"]
         qty_signed = int(qty) if qty.is_integer() else qty
+        cost_basis = avg_unsigned * abs(qty)
+        alloc_disp = cost_basis / total_cost if total_cost > 0 else ""
         current = p.get("current")
         if current is not None:
             pl = (current - avg_unsigned) * abs(qty) if qty > 0 else (avg_unsigned - current) * abs(qty)
-            cost_basis = avg_unsigned * abs(qty)
             pct_change = pl / cost_basis if cost_basis > 0 else ""
-            value = abs(current) * abs(qty)
-            alloc_disp = value / total_value if total_value > 0 else ""
             current_disp, pl_disp, pct_disp = round(current, 2), round(pl, 2), pct_change
             total_pl += pl
             total_cost_basis += cost_basis
-            opt_value_sum += value
             have_any_pl = True
         else:
-            current_disp = pl_disp = pct_disp = alloc_disp = ""
+            current_disp = pl_disp = pct_disp = ""
         rows.append([
             p["underlying"], p["strike"], p["expiration"], p["type"],
             round(avg_unsigned, 2), qty_signed, current_disp, pl_disp, pct_disp, alloc_disp,
@@ -349,12 +343,12 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
     # --- Options TOTAL row (blank spacer + TOTAL) ---
     rows.append([])
     opt_total_idx = len(rows)
+    opt_alloc = opt_cost_sum / total_cost if total_cost > 0 else ""
     if have_any_pl:
         total_pct = total_pl / total_cost_basis if total_cost_basis > 0 else ""
-        opt_alloc = opt_value_sum / total_value if total_value > 0 else ""
         rows.append(["TOTAL", "", "", "", "", "", "", round(total_pl, 2), total_pct, opt_alloc])
     else:
-        rows.append(["TOTAL", "", "", "", "", "", "", "", "", ""])
+        rows.append(["TOTAL", "", "", "", "", "", "", "", "", opt_alloc])
 
     meta: dict = {
         "opt_body": (opt_body_start, opt_body_end),
@@ -373,38 +367,36 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
         stock_body_start = len(rows)
         s_total_pl = 0.0
         s_total_cost = 0.0
-        s_value_sum = 0.0
         s_have = False
+        stk_cost_sum = sum(s["avg_cost"] * s["quantity"] for s in stocks)
         for s in sorted(stocks, key=lambda x: x["symbol"]):
             avg = s["avg_cost"]
             qty = s["quantity"]
             qty_disp = int(qty) if float(qty).is_integer() else round(qty, 4)
+            cost = avg * qty
+            alloc_disp = cost / total_cost if total_cost > 0 else ""
             current = s.get("current")
             if current is not None:
                 pl = (current - avg) * qty
-                cost = avg * qty
                 pct = pl / cost if cost > 0 else ""
-                value = current * qty
-                alloc_disp = value / total_value if total_value > 0 else ""
                 current_disp, pl_disp, pct_disp = round(current, 2), round(pl, 2), pct
                 s_total_pl += pl
                 s_total_cost += cost
-                s_value_sum += value
                 s_have = True
             else:
-                current_disp = pl_disp = pct_disp = alloc_disp = ""
+                current_disp = pl_disp = pct_disp = ""
             rows.append([s["symbol"], "", "", "", round(avg, 2), qty_disp,
                          current_disp, pl_disp, pct_disp, alloc_disp])
         stock_body_end = len(rows)
 
         rows.append([])
         stock_total_idx = len(rows)
+        s_alloc = stk_cost_sum / total_cost if total_cost > 0 else ""
         if s_have:
             s_total_pct = s_total_pl / s_total_cost if s_total_cost > 0 else ""
-            s_alloc = s_value_sum / total_value if total_value > 0 else ""
             rows.append(["STOCK TOTAL", "", "", "", "", "", "", round(s_total_pl, 2), s_total_pct, s_alloc])
         else:
-            rows.append(["STOCK TOTAL", "", "", "", "", "", "", "", "", ""])
+            rows.append(["STOCK TOTAL", "", "", "", "", "", "", "", "", s_alloc])
 
         meta["stock_body"] = (stock_body_start, stock_body_end)
         meta["stock_total"] = stock_total_idx
