@@ -28,12 +28,16 @@ echo -e "${BLUE}   Options Position Tracker Automated Cloud Deploy    ${NC}"
 echo -e "${BLUE}=====================================================${NC}"
 
 # 1. Package Secrets Locally
-echo -e "\n${YELLOW}[1/7] Packaging local secrets (.env, service-account.json, setup_cloud.sh, sync_positions.py)...${NC}"
-if [ ! -f ".env" ] || [ ! -f "service-account.json" ] || [ ! -f "setup_cloud.sh" ] || [ ! -f "sync_positions.py" ]; then
-    echo -e "${RED}Error: Local secrets, setup_cloud.sh, or sync_positions.py missing. Ensure they exist locally.${NC}"
+echo -e "\n${YELLOW}[1/7] Packaging local secrets (.env, service-account.json)...${NC}"
+if [ ! -f ".env" ] || [ ! -f "service-account.json" ]; then
+    echo -e "${RED}Error: Local secrets missing (.env / service-account.json). Ensure they exist locally.${NC}"
     exit 1
 fi
-tar -czf secrets.tar.gz .env service-account.json setup_cloud.sh sync_positions.py
+# Only secrets go in the archive. CODE is delivered via git clone/pull on the VM
+# (step 5) — never bundle sync_positions.py here, or the VM's working tree
+# diverges from git and future `git pull`s fail. Use COPYFILE_DISABLE to keep
+# macOS from adding ._* AppleDouble junk to the tar.
+COPYFILE_DISABLE=1 tar -czf secrets.tar.gz .env service-account.json
 echo -e "${GREEN}Packaged secrets.tar.gz successfully.${NC}"
 
 # 2. Remote Folder Provisioning
