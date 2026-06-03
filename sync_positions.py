@@ -31,9 +31,8 @@ log = logging.getLogger("sync")
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 POSITIONS_TAB = "Positions"
 SUMMARY_TAB = "Summary"
-SUMMARY_CASH_CELL = "H2"          # Cash in Hand (portfolio_cash)
-SUMMARY_BP_CELL = "H3"            # Buying Power
-SUMMARY_COLLATERAL_CELL = "H4"    # Options Collateral
+# Cash metrics have been moved to the Positions tab (column K/L).
+# They are no longer written to the Summary tab directly.
 
 
 def env(name: str, required: bool = False, default: str = "") -> str:
@@ -283,55 +282,10 @@ def write_tab(svc, sheet_id: str, tab: str, values: list[list],
                                        body={"requests": format_requests}).execute()
 
 
-def write_summary_metric(svc, sheet_id: str, cell: str, val: Optional[float], metric_name: str, label_cell: Optional[str] = None, label_val: Optional[str] = None) -> None:
-    """Surgically write a numeric value into a specific cell on the Summary tab
-    and format it as currency with no decimals (e.g. $33,306). Also writes an optional label.
-    Does not touch any other cells on the tab."""
-    if val is None:
-        log.warning("Skipping Summary!%s write (%s unavailable)", cell, metric_name)
-        return
-    
-    if label_cell and label_val:
-        svc.spreadsheets().values().update(
-            spreadsheetId=sheet_id,
-            range=f"{SUMMARY_TAB}!{label_cell}",
-            valueInputOption="USER_ENTERED",
-            body={"values": [[label_val]]},
-        ).execute()
-
-    svc.spreadsheets().values().update(
-        spreadsheetId=sheet_id,
-        range=f"{SUMMARY_TAB}!{cell}",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[round(val)]]},
-    ).execute()
-    
-    # Extract row and column index from cell coordinate (e.g. "G2" -> row 1, col 6)
-    col_str = "".join([c for c in cell if c.isalpha()])
-    row_str = "".join([c for c in cell if c.isdigit()])
-    
-    col_idx = 0
-    for char in col_str:
-        col_idx = col_idx * 26 + (ord(char.upper()) - ord('A') + 1)
-    col_idx -= 1 # 0-indexed
-    
-    row_idx = int(row_str) - 1 # 0-indexed
-    
-    sid = _sheet_id_int(svc, sheet_id, SUMMARY_TAB)
-    
-    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [{
-        "repeatCell": {
-            "range": {"sheetId": sid, 
-                      "startRowIndex": row_idx, "endRowIndex": row_idx + 1,
-                      "startColumnIndex": col_idx, "endColumnIndex": col_idx + 1},
-            "cell": {"userEnteredFormat": {"numberFormat": {"type": "CURRENCY", "pattern": '"$"#,##0'}}},
-            "fields": "userEnteredFormat.numberFormat",
-        }
-    }]}).execute()
-    log.info("Wrote Summary!%s %s: $%s", cell, metric_name, f"{round(val):,}")
+# write_summary_metric was removed since cash metrics moved to Positions tab
 
 
-def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], dict]:
+def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optional[float] = None, options_collateral: Optional[float] = None, portfolio_cash: Optional[float] = None) -> tuple[list[list], dict]:
     """Build the Positions tab content. Returns (rows, meta) where meta carries
     the row ranges main() needs to apply number formats and bolding.
 
@@ -456,6 +410,29 @@ def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], 
         meta["stock_total"] = stock_total_idx
         meta["bold_rows"].extend([stock_header_idx, stock_total_idx])
 
+    # Ensure rows has at least 4 elements so we can write to K2:L4
+    while len(rows) < 4:
+        rows.append([])
+
+    # Pad rows to make sure we can write to columns K and L (indexes 10 and 11)
+    # Row 2 (index 1): Cash in hand
+    if portfolio_cash is not None:
+        while len(rows[1]) < 10:
+            rows[1].append("")
+        rows[1].extend(["Cash in hand", round(portfolio_cash)])
+        
+    # Row 3 (index 2): Buying Power
+    if buying_power is not None:
+        while len(rows[2]) < 10:
+            rows[2].append("")
+        rows[2].extend(["Buying Power", round(buying_power)])
+        
+    # Row 4 (index 3): Options Collateral
+    if options_collateral is not None:
+        while len(rows[3]) < 10:
+            rows[3].append("")
+        rows[3].extend(["Options Collateral", round(options_collateral)])
+
     return rows, meta
 
 
@@ -471,7 +448,7 @@ def main() -> int:
     svc = sheets_service()
     ensure_tab(svc, sheet_id, POSITIONS_TAB)
     ensure_tab(svc, sheet_id, SUMMARY_TAB)
-    sheet_rows, meta = build_sheet(positions, stocks)
+    sheet_rows, meta = build_sheet(positions, stocks, buying_power, options_collateral, portfolio_cash)
     sid = _sheet_id_int(svc, sheet_id, POSITIONS_TAB)
 
     # Number formats: E avg + G current as 2-decimals, H P/L signed currency,
@@ -517,13 +494,36 @@ def main() -> int:
         fmt_requests.append(_border_grid_req(sid, stock_header, meta["stock_body"][1]))
         fmt_requests.append(_border_grid_req(sid, meta["stock_total"], meta["stock_total"] + 1))
 
+    # Format requests for K2:L4 cash metrics block (row 2-4, columns K-L)
+    fmt_requests.append(_num_format_req(sid, 1, 4, 11, '"$"#,##0'))
+    fmt_requests.append({
+        "repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 4, "startColumnIndex": 10, "endColumnIndex": 12},
+            "cell": {"userEnteredFormat": {"textFormat": {"bold": True}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
+            "fields": "userEnteredFormat.textFormat.bold,userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment",
+        }
+    })
+    line = {"style": "SOLID", "color": {"red": 0.7, "green": 0.7, "blue": 0.7}}
+    fmt_requests.append({
+        "updateBorders": {
+            "range": {"sheetId": sid, "startRowIndex": 1, "endRowIndex": 4, "startColumnIndex": 10, "endColumnIndex": 12},
+            "top": line, "bottom": line, "left": line, "right": line,
+            "innerHorizontal": line, "innerVertical": line,
+        }
+    })
+
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
     log.info("Wrote Positions tab: %d option(s), %d stock(s) + totals", len(positions), len(stocks))
 
-    # Surgically write cash metrics into Summary tab
-    write_summary_metric(svc, sheet_id, SUMMARY_CASH_CELL, portfolio_cash, "cash in hand", "G2", "Cash in hand")
-    write_summary_metric(svc, sheet_id, SUMMARY_BP_CELL, buying_power, "buying power", "G3", "Buying Power")
-    write_summary_metric(svc, sheet_id, SUMMARY_COLLATERAL_CELL, options_collateral, "options collateral", "G4", "Options Collateral")
+    # Clear Summary!G2:H4 as these metrics have moved to the Positions tab
+    summary_sid = _sheet_id_int(svc, sheet_id, SUMMARY_TAB)
+    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [
+        {"updateCells": {
+            "range": {"sheetId": summary_sid, "startRowIndex": 1, "endRowIndex": 4, "startColumnIndex": 6, "endColumnIndex": 8},
+            "fields": "userEnteredFormat,userEnteredValue",
+        }}
+    ]}).execute()
+    log.info("Cleared Summary!G2:H4 cash cells")
 
     # The Summary tab mirrors the Positions table via an array formula
     # (Summary!A8 = ={Positions!A3:I}), which copies values but NOT formatting.
