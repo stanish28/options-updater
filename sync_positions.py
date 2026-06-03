@@ -514,15 +514,60 @@ def main() -> int:
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
     log.info("Wrote Positions tab: %d option(s), %d stock(s) + totals", len(positions), len(stocks))
 
-    # Clear Summary!G2:H4 as these metrics have moved to the Positions tab
+    # Write Options Allocation and Stocks Allocation to Summary!G1:H2
+    opt_cost_sum = sum(abs(p["avg_price"]) * abs(p["quantity"]) for p in positions)
+    stk_cost_sum = sum(s["avg_cost"] * s["quantity"] for s in stocks)
+    options_alloc = opt_cost_sum / initial_invested if initial_invested > 0 else 0.0
+    stocks_alloc = stk_cost_sum / initial_invested if initial_invested > 0 else 0.0
+
+    svc.spreadsheets().values().update(
+        spreadsheetId=sheet_id,
+        range=f"{SUMMARY_TAB}!G1:H2",
+        valueInputOption="USER_ENTERED",
+        body={"values": [
+            ["Options", options_alloc],
+            ["Stocks", stocks_alloc]
+        ]},
+    ).execute()
+
+    # Clear Summary!G3:H4 (indices: startRow 2, endRow 4, startCol 6, endCol 8)
     summary_sid = _sheet_id_int(svc, sheet_id, SUMMARY_TAB)
     svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [
         {"updateCells": {
-            "range": {"sheetId": summary_sid, "startRowIndex": 1, "endRowIndex": 4, "startColumnIndex": 6, "endColumnIndex": 8},
+            "range": {"sheetId": summary_sid, "startRowIndex": 2, "endRowIndex": 4, "startColumnIndex": 6, "endColumnIndex": 8},
             "fields": "userEnteredFormat,userEnteredValue",
         }}
     ]}).execute()
-    log.info("Cleared Summary!G2:H4 cash cells")
+
+    # Apply formatting and borders to G1:H2
+    line_border = {"style": "SOLID", "color": {"red": 0.7, "green": 0.7, "blue": 0.7}}
+    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [
+        # Format H1:H2 as percentage
+        {
+            "repeatCell": {
+                "range": {"sheetId": summary_sid, "startRowIndex": 0, "endRowIndex": 2, "startColumnIndex": 7, "endColumnIndex": 8},
+                "cell": {"userEnteredFormat": {"numberFormat": {"type": "NUMBER", "pattern": "0.0%"}}},
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        },
+        # Bold and Center G1:H2
+        {
+            "repeatCell": {
+                "range": {"sheetId": summary_sid, "startRowIndex": 0, "endRowIndex": 2, "startColumnIndex": 6, "endColumnIndex": 8},
+                "cell": {"userEnteredFormat": {"textFormat": {"bold": True}, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
+                "fields": "userEnteredFormat.textFormat.bold,userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment",
+            }
+        },
+        # Borders around G1:H2
+        {
+            "updateBorders": {
+                "range": {"sheetId": summary_sid, "startRowIndex": 0, "endRowIndex": 2, "startColumnIndex": 6, "endColumnIndex": 8},
+                "top": line_border, "bottom": line_border, "left": line_border, "right": line_border,
+                "innerHorizontal": line_border, "innerVertical": line_border,
+            }
+        }
+    ]}).execute()
+    log.info("Wrote Options and Stock allocations to Summary!G1:H2 and cleared Summary!G3:H4")
 
     # The Summary tab mirrors the Positions table via an array formula
     # (Summary!A8 = ={Positions!A3:I}), which copies values but NOT formatting.

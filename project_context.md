@@ -159,7 +159,7 @@ In addition to option and stock positions, the sync script writes live account c
     - Column K contains the bolded, centered labels.
     - Column L contains the bolded, centered values, formatted dynamically as currency with zero decimal places (`"$"#,##0`).
     - A solid grey grid border is drawn around the K2:L4 cell region to match the table borders.
-*   **Summary Tab Sync**: To keep the hand-curated `Summary` tab clean, the script automatically clears cells `Summary!G2:H4` on each run.
+*   **Summary Tab Sync**: The script automatically clears cells `Summary!G3:H4` on each run, and surgically writes the overall **Options Allocation** to `Summary!G1:H1` and **Stock Allocation** to `Summary!G2:H2` (both bolded, centered, and formatted as `0.0%` with solid borders).
 
 ### 5.5 STOCKS Section (Open Share Positions)
 Below the options table and its TOTAL row, the script appends a **STOCKS** section listing open share positions (e.g. FLNC ×400), pulled via `fetch_stock_positions()` (`r.account.get_open_stock_positions`, with one batched `get_latest_price` call for all tickers).
