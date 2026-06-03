@@ -101,6 +101,9 @@ To ensure a robust "current market price", the script uses a fallback method ins
 3.  If all are missing or evaluate to 0, use the midpoint: $\text{Current Price} = \frac{\text{bid\_price} + \text{ask\_price}}{2}$.
 4.  Option prices from Robinhood are per-share (e.g. $1.50). The script multiplies by 100 to calculate the per-contract value.
 
+### 4.3a Allocation (Column J)
+Each row's **Allocation** = its current market value ÷ **total portfolio value** (the sum of current market values of every option + stock). Options contribute `|current_per_contract × contracts|` (absolute, so short positions count their buyback magnitude); stocks contribute `current × shares`. Per-position allocations sum to ~100%; the **TOTAL** and **STOCK TOTAL** rows show each section's combined share (e.g. options 69.9% + stocks 30.1%). Scope is options + stocks pooled together (user decision, 2026-06-02).
+
 ### 4.3 Total Portfolio Summary
 *   **Positions Sorting Order**: Options positions are listed in a strict, deterministic sequence: first sorted by expiration date (ascending), and then sorted alphabetically by the underlying ticker symbol (ascending) if multiple contracts share the same expiration date.
 *   A blank spacer row is added at the end of individual options rows, followed by a **TOTAL** row.
@@ -115,7 +118,7 @@ To ensure a robust "current market price", the script uses a fallback method ins
 The script wipes the `Positions` tab clean on every run to eliminate trailing stale rows, then rebuilds it with strict formatting:
 
 ### 5.1 Spreadsheet Columns
-The sheet contains 9 columns, structured as follows:
+The sheet contains 10 columns, structured as follows:
 
 | Column | Header | Data Type | Notes / Format |
 |---|---|---|---|
@@ -128,6 +131,7 @@ The sheet contains 9 columns, structured as follows:
 | **G** | Current Price | Currency | Live market mark price per contract (Format: `#,##0.00`) |
 | **H** | Profit/Loss | Signed Currency | P/L per position (Format: `+$#,##0.00` in Green / `-$#,##0.00` in Red) |
 | **I** | % Change | Signed Percentage | Percentage gain/loss (Format: `+0.00%` in Green / `-0.00%` in Red) |
+| **J** | Allocation | Percentage | Position's current market value ÷ total portfolio value (Format: `0.0%`) |
 
 ### 5.2 Specific Format Patterns
 *   **Double Decimal Format (`NUMBER_2DEC_FMT`)**: `#,##0.00` (Applied to Avg Buying Price and Current Price).
@@ -139,7 +143,7 @@ The sheet contains 9 columns, structured as follows:
 *   **Row 1**: Displays `Last synced: May 28, 2026 6:05 AM PDT`. Italicized, medium grey, left-aligned.
 *   **Row 2**: Table headers. Bolded, centered, light blue-grey fill (`rgb 0.85,0.89,0.95`).
 *   **Total / STOCK TOTAL rows**: Bolded.
-*   **Centering**: Every cell from the header row down (cols A–I) is horizontally centered + vertically middle-aligned via a `repeatCell` over the whole table region.
+*   **Centering**: Every cell from the header row down (cols A–J) is horizontally centered + vertically middle-aligned via a `repeatCell` over the whole table region.
 *   **Borders**: A solid grey grid (`updateBorders`, all inner + outer) is drawn around each block — the options header+body, the options TOTAL row, and (if present) the STOCKS header+body and STOCK TOTAL row. Blank spacer rows are left unbordered as visual separators.
 *   **Reset behaviour**: The per-run whole-sheet `updateCells` reset (fields `userEnteredFormat,userEnteredValue`) clears all prior fills/borders/alignment before re-applying, so formatting never accumulates or goes stale.
 *   Helpers: `_align_center_req`, `_header_fill_req`, `_border_grid_req`, `_range` (all take a `sheetId` + row range).
@@ -148,8 +152,15 @@ The sheet contains 9 columns, structured as follows:
 In addition to the options positions tracker, the script performs a highly targeted surgical write to update the `Summary` tab with your live cash balance:
 *   **Target Tab**: `Summary`
 *   **Target Cell**: `H2`
-*   **Metric Written**: Cash in hand (cash balance / portfolio cash) from the Robinhood account profile.
+*   **Metric Written**: Cash in hand, which represents the total overall cash holdings in the account.
+*   **Calculation Formula**:
+    $$\text{Cash in Hand} = \text{Settled Cash} + \text{Unsettled Funds}$$
+    Where:
+    - **Settled Cash** (`cash` in Robinhood profile) is `$15,782.65` (consisting of available `buying_power` of `$1,932.65` + options collateral `cash_held_for_options_collateral` of `$13,850.00`).
+    - **Unsettled Funds** (`unsettled_funds` in Robinhood profile) is `$7,378.62`.
+    - This equals the total `portfolio_cash` field (`$23,161.27`) and is written as a rounded integer (`$23,161`) to cell `H2`.
 *   **Surgical Behavior**: Unlike the `Positions` tab (which is wiped clean and fully rebuilt on every run), the `Summary` tab is hand-curated and hand-maintained. The script performs a highly targeted single-cell value update on cell `H2` only, leaving the rest of the Summary tab entirely untouched.
+
 *   **Automatic Cell Coordinate Parsing**: The script contains a custom parsing function (`write_summary_metric`) that takes the alphanumeric cell coordinate string (e.g. `"H2"`), isolates the column letters (`"H"`) and row numbers (`"2"`), converts them to 0-indexed integer coordinates (row `1`, column `7` in a 0-indexed grid), and writes the rounded value.
 *   **Currency Formatting**: The script dynamically issues a Sheets API `repeatCell` batchUpdate to apply a custom integer currency format (`"$"#,##0`) to that single target cell, rendering the cash balance as a rounded dollar value (e.g. `$33,306`).
 
@@ -162,6 +173,13 @@ Below the options table and its TOTAL row, the script appends a **STOCKS** secti
 
 ### 5.6 Closed Positions Tab — Intentionally Manual
 The `Closed Positions` tab (Ticker | Realized Profit/Loss, one row per closed trade) is **hand-maintained and never touched by the script** (user decision, 2026-06-01). Rationale: Robinhood does not store realized P/L on closed positions (`average_price` resets to 0 once closed), so it would have to be reconstructed from order history — which **misses expirations** (selling puts that expire worthless generates no closing order, only an event) and **cannot cover the individual sub-account** (not API-accessible without its account number). Some rows in the tab are from that individual account. **Do not automate this tab** unless the user explicitly revisits the decision.
+
+### 5.7 Summary Tab — Formatting & Allocation Mirror
+The Summary tab shows the same positions table as Positions via an **array formula** (`Summary!A8 = ={Positions!A3:J}`), which copies **values but not formatting**. So each run `main()`:
+1. Clears the Summary table region's formatting (rows 7+, cols A–J; `updateCells` with `fields=userEnteredFormat` only — leaves the mirror formula/values intact), then
+2. `copyPaste` PASTE_FORMAT from the freshly-formatted Positions block onto the aligned Summary region. **Offset is +5 rows**: Positions header (row index 1) → Summary header (row index 6 / sheet row 7); the spill at Summary A8 maps to Positions A3.
+
+This keeps Summary visually identical to Positions — borders, header fills, centering, number formats, and the allocation column. A **one-time setup** (2026-06-02) extended the mirror formula from `A3:I` to `A3:J` and wrote the `Allocation` header to `Summary!J7` so column J flows through. If the user relocates the Summary table, this `+5` offset assumption breaks.
 
 ---
 

@@ -84,8 +84,8 @@ def fetch_market_price(option_id: str) -> Optional[float]:
 
 
 def fetch_account_balances(account_number: Optional[str]) -> tuple[Optional[float], Optional[float]]:
-    """Return (buying_power, cash_balance) in dollars from the account profile,
-    or (None, None) if the API call fails. Includes pending instant deposits."""
+    """Return (buying_power, cash_in_hand) in dollars from the account profile,
+    or (None, None) if the API call fails. Includes unsettled funds and pending instant deposits."""
     try:
         ap = r.profiles.load_account_profile(account_number=account_number)
     except Exception as e:
@@ -94,8 +94,13 @@ def fetch_account_balances(account_number: Optional[str]) -> tuple[Optional[floa
     if not ap:
         return None, None
     buying_power = _as_float(ap.get("buying_power"))
-    cash = _as_float(ap.get("cash"))
-    return buying_power, cash
+    cash = _as_float(ap.get("cash")) or 0.0
+    unsettled = _as_float(ap.get("unsettled_funds")) or 0.0
+    
+    # cash in hand = settled cash (includes collateral + buying power) + unsettled funds
+    cash_in_hand = cash + unsettled
+    return buying_power, cash_in_hand
+
 
 
 def fetch_positions(account_number: Optional[str]) -> list[dict]:
@@ -184,6 +189,7 @@ def ensure_tab(svc, sheet_id: str, tab: str) -> None:
 NUMBER_2DEC_FMT = '#,##0.00'
 SIGNED_CURRENCY_FMT = '[Color10]"+$"#,##0.00;[Red]"-$"#,##0.00;"$"0.00'
 SIGNED_PCT_FMT       = '[Color10]"+"0.00%;[Red]"-"0.00%;0.00%'
+ALLOCATION_FMT       = '0.0%'
 
 
 def _sheet_id_int(svc, sheet_id: str, tab: str) -> int:
@@ -210,7 +216,7 @@ def _bold_row_req(sid: int, row: int) -> dict:
     }}
 
 
-_TABLE_COLS = 9  # columns A–I
+_TABLE_COLS = 10  # columns A–J
 
 
 def _range(sid: int, r0: int, r1: int, c0: int = 0, c1: int = _TABLE_COLS) -> dict:
@@ -319,9 +325,25 @@ def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], 
 
     # --- Row 2: header; row 3+: options body ---
     rows.append(["Ticker", "Strike", "Expiry", "Put/Call",
-                 "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss", "% Change"])
+                 "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss",
+                 "% Change", "Allocation"])
+
+    # Allocation denominator: total current market value across all positions
+    # (options + stocks). Each row's allocation = its value / this total, so they
+    # sum to ~100%. Short options use the absolute buyback value as their value.
+    def _opt_value(p: dict) -> float:
+        c = p.get("current")
+        return abs(c) * abs(p["quantity"]) if c is not None else 0.0
+
+    def _stk_value(s: dict) -> float:
+        c = s.get("current")
+        return c * s["quantity"] if c is not None else 0.0
+
+    total_value = (sum(_opt_value(p) for p in positions)
+                   + sum(_stk_value(s) for s in stocks))
 
     opt_body_start = len(rows)
+    opt_value_sum = 0.0
     total_pl = 0.0
     total_cost_basis = 0.0
     have_any_pl = False
@@ -334,15 +356,18 @@ def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], 
             pl = (current - avg_unsigned) * abs(qty) if qty > 0 else (avg_unsigned - current) * abs(qty)
             cost_basis = avg_unsigned * abs(qty)
             pct_change = pl / cost_basis if cost_basis > 0 else ""
+            value = abs(current) * abs(qty)
+            alloc_disp = value / total_value if total_value > 0 else ""
             current_disp, pl_disp, pct_disp = round(current, 2), round(pl, 2), pct_change
             total_pl += pl
             total_cost_basis += cost_basis
+            opt_value_sum += value
             have_any_pl = True
         else:
-            current_disp = pl_disp = pct_disp = ""
+            current_disp = pl_disp = pct_disp = alloc_disp = ""
         rows.append([
             p["underlying"], p["strike"], p["expiration"], p["type"],
-            round(avg_unsigned, 2), qty_signed, current_disp, pl_disp, pct_disp,
+            round(avg_unsigned, 2), qty_signed, current_disp, pl_disp, pct_disp, alloc_disp,
         ])
     opt_body_end = len(rows)
 
@@ -351,9 +376,10 @@ def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], 
     opt_total_idx = len(rows)
     if have_any_pl:
         total_pct = total_pl / total_cost_basis if total_cost_basis > 0 else ""
-        rows.append(["TOTAL", "", "", "", "", "", "", round(total_pl, 2), total_pct])
+        opt_alloc = opt_value_sum / total_value if total_value > 0 else ""
+        rows.append(["TOTAL", "", "", "", "", "", "", round(total_pl, 2), total_pct, opt_alloc])
     else:
-        rows.append(["TOTAL", "", "", "", "", "", "", "", ""])
+        rows.append(["TOTAL", "", "", "", "", "", "", "", "", ""])
 
     meta: dict = {
         "opt_body": (opt_body_start, opt_body_end),
@@ -368,10 +394,11 @@ def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], 
         rows.append([])
         stock_header_idx = len(rows)
         rows.append(["STOCKS", "", "", "", "Avg Cost", "Shares",
-                     "Current Price", "Profit/Loss", "% Change"])
+                     "Current Price", "Profit/Loss", "% Change", "Allocation"])
         stock_body_start = len(rows)
         s_total_pl = 0.0
         s_total_cost = 0.0
+        s_value_sum = 0.0
         s_have = False
         for s in sorted(stocks, key=lambda x: x["symbol"]):
             avg = s["avg_cost"]
@@ -382,23 +409,27 @@ def build_sheet(positions: list[dict], stocks: list[dict]) -> tuple[list[list], 
                 pl = (current - avg) * qty
                 cost = avg * qty
                 pct = pl / cost if cost > 0 else ""
+                value = current * qty
+                alloc_disp = value / total_value if total_value > 0 else ""
                 current_disp, pl_disp, pct_disp = round(current, 2), round(pl, 2), pct
                 s_total_pl += pl
                 s_total_cost += cost
+                s_value_sum += value
                 s_have = True
             else:
-                current_disp = pl_disp = pct_disp = ""
+                current_disp = pl_disp = pct_disp = alloc_disp = ""
             rows.append([s["symbol"], "", "", "", round(avg, 2), qty_disp,
-                         current_disp, pl_disp, pct_disp])
+                         current_disp, pl_disp, pct_disp, alloc_disp])
         stock_body_end = len(rows)
 
         rows.append([])
         stock_total_idx = len(rows)
         if s_have:
             s_total_pct = s_total_pl / s_total_cost if s_total_cost > 0 else ""
-            rows.append(["STOCK TOTAL", "", "", "", "", "", "", round(s_total_pl, 2), s_total_pct])
+            s_alloc = s_value_sum / total_value if total_value > 0 else ""
+            rows.append(["STOCK TOTAL", "", "", "", "", "", "", round(s_total_pl, 2), s_total_pct, s_alloc])
         else:
-            rows.append(["STOCK TOTAL", "", "", "", "", "", "", "", ""])
+            rows.append(["STOCK TOTAL", "", "", "", "", "", "", "", "", ""])
 
         meta["stock_body"] = (stock_body_start, stock_body_end)
         meta["stock_total"] = stock_total_idx
@@ -430,12 +461,14 @@ def main() -> int:
             _num_format_req(sid, start, end, 6, NUMBER_2DEC_FMT),     # G
             _num_format_req(sid, start, end, 7, SIGNED_CURRENCY_FMT), # H
             _num_format_req(sid, start, end, 8, SIGNED_PCT_FMT),      # I
+            _num_format_req(sid, start, end, 9, ALLOCATION_FMT),      # J allocation
         ]
 
     def total_fmts(idx):
         return [
             _num_format_req(sid, idx, idx + 1, 7, SIGNED_CURRENCY_FMT),  # H
             _num_format_req(sid, idx, idx + 1, 8, SIGNED_PCT_FMT),       # I
+            _num_format_req(sid, idx, idx + 1, 9, ALLOCATION_FMT),       # J allocation
         ]
 
     fmt_requests = body_fmts(*meta["opt_body"]) + total_fmts(meta["opt_total"])
@@ -468,6 +501,36 @@ def main() -> int:
 
     # Surgically write cash in hand into Summary tab
     write_summary_metric(svc, sheet_id, SUMMARY_CASH_CELL, cash, "cash in hand")
+
+    # The Summary tab mirrors the Positions table via an array formula
+    # (Summary!A8 = ={Positions!A3:I}), which copies values but NOT formatting.
+    # So we clear the Summary table region's formatting and paste the Positions
+    # formatting onto it. Alignment offset is +5 rows: Positions header (row
+    # index 1) maps to the Summary header (row index 6 / sheet row 7).
+    SUMMARY_TABLE_TOP = 6  # 0-indexed; Summary row 7 = header
+    summary_sid = _sheet_id_int(svc, sheet_id, SUMMARY_TAB)
+    src_top, src_bottom = 1, last_row + 1   # Positions: header through last total row
+    n_rows = src_bottom - src_top
+    svc.spreadsheets().batchUpdate(spreadsheetId=sheet_id, body={"requests": [
+        # Clear stale formatting on the Summary table region (formats only —
+        # leaves the mirror formulas/values intact).
+        {"updateCells": {
+            "range": {"sheetId": summary_sid, "startRowIndex": SUMMARY_TABLE_TOP,
+                      "endRowIndex": 200, "startColumnIndex": 0, "endColumnIndex": _TABLE_COLS},
+            "fields": "userEnteredFormat",
+        }},
+        # Copy Positions formatting (borders, fills, bold, centering, number
+        # formats) onto the aligned Summary region.
+        {"copyPaste": {
+            "source": {"sheetId": sid, "startRowIndex": src_top, "endRowIndex": src_bottom,
+                       "startColumnIndex": 0, "endColumnIndex": _TABLE_COLS},
+            "destination": {"sheetId": summary_sid, "startRowIndex": SUMMARY_TABLE_TOP,
+                            "endRowIndex": SUMMARY_TABLE_TOP + n_rows,
+                            "startColumnIndex": 0, "endColumnIndex": _TABLE_COLS},
+            "pasteType": "PASTE_FORMAT",
+        }},
+    ]}).execute()
+    log.info("Mirrored Positions formatting onto Summary tab")
 
     return 0
 
