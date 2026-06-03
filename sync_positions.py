@@ -31,7 +31,9 @@ log = logging.getLogger("sync")
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 POSITIONS_TAB = "Positions"
 SUMMARY_TAB = "Summary"
-SUMMARY_CASH_CELL = "H2"          # surgical write — does not touch other cells on the Summary tab
+SUMMARY_CASH_CELL = "H2"          # Cash in Hand (portfolio_cash)
+SUMMARY_BP_CELL = "H3"            # Buying Power
+SUMMARY_COLLATERAL_CELL = "H4"    # Options Collateral
 
 
 def env(name: str, required: bool = False, default: str = "") -> str:
@@ -83,23 +85,34 @@ def fetch_market_price(option_id: str) -> Optional[float]:
     return None
 
 
-def fetch_account_balances(account_number: Optional[str]) -> tuple[Optional[float], Optional[float]]:
-    """Return (buying_power, cash_in_hand) in dollars from the account profile,
-    or (None, None) if the API call fails. Includes unsettled funds and pending instant deposits."""
+def fetch_account_balances(account_number: Optional[str]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Return (buying_power, options_collateral, portfolio_cash) in dollars from the account profile,
+    or (None, None, None) if the API call fails."""
     try:
         ap = r.profiles.load_account_profile(account_number=account_number)
     except Exception as e:
         log.warning("load_account_profile failed: %s", e)
-        return None, None
+        return None, None, None
     if not ap:
-        return None, None
+        return None, None, None
     buying_power = _as_float(ap.get("buying_power"))
-    cash = _as_float(ap.get("cash")) or 0.0
-    unsettled = _as_float(ap.get("unsettled_funds")) or 0.0
+    options_collateral = _as_float(ap.get("cash_held_for_options_collateral"))
+    portfolio_cash = _as_float(ap.get("portfolio_cash"))
     
-    # cash in hand = settled cash (includes collateral + buying power) + unsettled funds
-    cash_in_hand = cash + unsettled
-    return buying_power, cash_in_hand
+    # Fallback to cash_balances sub-dict if top-level values are missing
+    cb = ap.get("cash_balances") or {}
+    if buying_power is None:
+        buying_power = _as_float(cb.get("buying_power"))
+    if options_collateral is None:
+        options_collateral = _as_float(cb.get("cash_held_for_options_collateral"))
+    if portfolio_cash is None:
+        portfolio_cash = _as_float(cb.get("portfolio_cash"))
+        if portfolio_cash is None:
+            cash = _as_float(ap.get("cash")) or _as_float(cb.get("cash")) or 0.0
+            unsettled = _as_float(ap.get("unsettled_funds")) or _as_float(cb.get("unsettled_funds")) or 0.0
+            portfolio_cash = cash + unsettled
+            
+    return buying_power, options_collateral, portfolio_cash
 
 
 
@@ -270,14 +283,22 @@ def write_tab(svc, sheet_id: str, tab: str, values: list[list],
                                        body={"requests": format_requests}).execute()
 
 
-def write_summary_metric(svc, sheet_id: str, cell: str, val: Optional[float], metric_name: str) -> None:
+def write_summary_metric(svc, sheet_id: str, cell: str, val: Optional[float], metric_name: str, label_cell: Optional[str] = None, label_val: Optional[str] = None) -> None:
     """Surgically write a numeric value into a specific cell on the Summary tab
-    and format it as currency with no decimals (e.g. $33,306). Does not touch
-    any other cells on the tab."""
+    and format it as currency with no decimals (e.g. $33,306). Also writes an optional label.
+    Does not touch any other cells on the tab."""
     if val is None:
         log.warning("Skipping Summary!%s write (%s unavailable)", cell, metric_name)
         return
     
+    if label_cell and label_val:
+        svc.spreadsheets().values().update(
+            spreadsheetId=sheet_id,
+            range=f"{SUMMARY_TAB}!{label_cell}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[label_val]]},
+        ).execute()
+
     svc.spreadsheets().values().update(
         spreadsheetId=sheet_id,
         range=f"{SUMMARY_TAB}!{cell}",
@@ -445,7 +466,7 @@ def main() -> int:
     login()
     positions = fetch_positions(account_number)
     stocks = fetch_stock_positions(account_number)
-    buying_power, cash = fetch_account_balances(account_number)
+    buying_power, options_collateral, portfolio_cash = fetch_account_balances(account_number)
 
     svc = sheets_service()
     ensure_tab(svc, sheet_id, POSITIONS_TAB)
@@ -499,8 +520,10 @@ def main() -> int:
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
     log.info("Wrote Positions tab: %d option(s), %d stock(s) + totals", len(positions), len(stocks))
 
-    # Surgically write cash in hand into Summary tab
-    write_summary_metric(svc, sheet_id, SUMMARY_CASH_CELL, cash, "cash in hand")
+    # Surgically write cash metrics into Summary tab
+    write_summary_metric(svc, sheet_id, SUMMARY_CASH_CELL, portfolio_cash, "cash in hand", "G2", "Cash in hand")
+    write_summary_metric(svc, sheet_id, SUMMARY_BP_CELL, buying_power, "buying power", "G3", "Buying Power")
+    write_summary_metric(svc, sheet_id, SUMMARY_COLLATERAL_CELL, options_collateral, "options collateral", "G4", "Options Collateral")
 
     # The Summary tab mirrors the Positions table via an array formula
     # (Summary!A8 = ={Positions!A3:I}), which copies values but NOT formatting.

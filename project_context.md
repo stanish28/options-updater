@@ -148,21 +148,18 @@ The sheet contains 10 columns, structured as follows:
 *   **Reset behaviour**: The per-run whole-sheet `updateCells` reset (fields `userEnteredFormat,userEnteredValue`) clears all prior fills/borders/alignment before re-applying, so formatting never accumulates or goes stale.
 *   Helpers: `_align_center_req`, `_header_fill_req`, `_border_grid_req`, `_range` (all take a `sheetId` + row range).
 
-### 5.4 Summary Tab & Cash in Hand Surgical Update
-In addition to the options positions tracker, the script performs a highly targeted surgical write to update the `Summary` tab with your live cash balance:
+### 5.4 Summary Tab & Cash Metrics Surgical Update
+In addition to the options positions tracker, the script performs a highly targeted surgical write to update the `Summary` tab with your live cash metrics:
 *   **Target Tab**: `Summary`
-*   **Target Cell**: `H2`
-*   **Metric Written**: Cash in hand, which represents the total overall cash holdings in the account.
-*   **Calculation Formula**:
-    $$\text{Cash in Hand} = \text{Settled Cash} + \text{Unsettled Funds}$$
-    Where:
-    - **Settled Cash** (`cash` in Robinhood profile) is `$15,782.65` (consisting of available `buying_power` of `$1,932.65` + options collateral `cash_held_for_options_collateral` of `$13,850.00`).
-    - **Unsettled Funds** (`unsettled_funds` in Robinhood profile) is `$7,378.62`.
-    - This equals the total `portfolio_cash` field (`$23,161.27`) and is written as a rounded integer (`$23,161`) to cell `H2`.
-*   **Surgical Behavior**: Unlike the `Positions` tab (which is wiped clean and fully rebuilt on every run), the `Summary` tab is hand-curated and hand-maintained. The script performs a highly targeted single-cell value update on cell `H2` only, leaving the rest of the Summary tab entirely untouched.
+*   **Target Cells & Metrics Written**:
+    - **H2 (Cash in hand)**: Represents the total overall cash holdings in the account (`portfolio_cash`), which is settled cash + unsettled funds.
+    - **H3 (Buying Power)**: Represents the available buying power (`buying_power`).
+    - **H4 (Options Collateral)**: Represents cash held for options collateral (`cash_held_for_options_collateral`).
+*   **Labels Written**: Corresponding text labels are written to `G2` ("Cash in hand"), `G3` ("Buying Power"), and `G4` ("Options Collateral").
+*   **Surgical Behavior**: Unlike the `Positions` tab (which is wiped clean and fully rebuilt on every run), the `Summary` tab is hand-curated and hand-maintained. The script performs highly targeted single-cell value and label updates on these cells only, leaving the rest of the Summary tab entirely untouched.
 
-*   **Automatic Cell Coordinate Parsing**: The script contains a custom parsing function (`write_summary_metric`) that takes the alphanumeric cell coordinate string (e.g. `"H2"`), isolates the column letters (`"H"`) and row numbers (`"2"`), converts them to 0-indexed integer coordinates (row `1`, column `7` in a 0-indexed grid), and writes the rounded value.
-*   **Currency Formatting**: The script dynamically issues a Sheets API `repeatCell` batchUpdate to apply a custom integer currency format (`"$"#,##0`) to that single target cell, rendering the cash balance as a rounded dollar value (e.g. `$33,306`).
+*   **Automatic Cell Coordinate Parsing**: The script contains a custom parsing function (`write_summary_metric`) that takes the alphanumeric cell coordinate string (e.g. `"H2"`), isolates the column letters (`"H"`) and row numbers (`"2"`), converts them to 0-indexed integer coordinates, and writes the rounded value and optional label.
+*   **Currency Formatting**: The script dynamically issues a Sheets API `repeatCell` batchUpdate to apply a custom integer currency format (`"$"#,##0`) to each value cell, rendering them as rounded dollar values (e.g. `$15,720`).
 
 ### 5.5 STOCKS Section (Open Share Positions)
 Below the options table and its TOTAL row, the script appends a **STOCKS** section listing open share positions (e.g. FLNC ×400), pulled via `fetch_stock_positions()` (`r.account.get_open_stock_positions`, with one batched `get_latest_price` call for all tickers).
