@@ -102,7 +102,7 @@ To ensure a robust "current market price", the script uses a fallback method ins
 4.  Option prices from Robinhood are per-share (e.g. $1.50). The script multiplies by 100 to calculate the per-contract value.
 
 ### 4.3a Allocation (Column J)
-Each row's **Allocation** = its initial invested amount ÷ **total portfolio cost** (the sum of initial invested amounts of every option + stock). Options contribute `avg_price × contracts × 100` (computed as `abs(avg_price) × abs(quantity)`); stocks contribute `avg_cost × shares`. Per-position allocations sum to ~100%; the **TOTAL** and **STOCK TOTAL** rows show each section's combined share of total invested capital. Scope is options + stocks pooled together.
+Each row's **Allocation** = its initial invested amount ÷ **total portfolio initial capital** (fetched dynamically from `Summary!B1`, defaulting to `$45,000`). Options contribute `avg_price × contracts × 100` (computed as `abs(avg_price) × abs(quantity)`); stocks contribute `avg_cost × shares`. Per-position allocations represent their share of the initial portfolio capital; the **TOTAL** and **STOCK TOTAL** rows show each section's combined share of the initial capital. Scope is options + stocks pooled together.
 
 ### 4.3 Total Portfolio Summary
 *   **Positions Sorting Order**: Options positions are listed in a strict, deterministic sequence: first sorted by expiration date (ascending), and then sorted alphabetically by the underlying ticker symbol (ascending) if multiple contracts share the same expiration date.

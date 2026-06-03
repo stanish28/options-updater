@@ -285,7 +285,7 @@ def write_tab(svc, sheet_id: str, tab: str, values: list[list],
 # write_summary_metric was removed since cash metrics moved to Positions tab
 
 
-def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optional[float] = None, options_collateral: Optional[float] = None, portfolio_cash: Optional[float] = None) -> tuple[list[list], dict]:
+def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optional[float] = None, options_collateral: Optional[float] = None, portfolio_cash: Optional[float] = None, initial_invested: float = 45000.0) -> tuple[list[list], dict]:
     """Build the Positions tab content. Returns (rows, meta) where meta carries
     the row ranges main() needs to apply number formats and bolding.
 
@@ -303,15 +303,11 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
                  "Avg Buying Price", "No of Cons", "Current Price", "Profit/Loss",
                  "% Change", "Allocation"])
 
-    # Allocation denominator: total initial invested amount across all positions
-    # (options + stocks). Each row's allocation = its cost basis / this total.
+    # Allocation denominator: total initial invested capital of the portfolio
+    # (fetched dynamically from Summary!B1).
     def _opt_cost(p: dict) -> float:
         return abs(p["avg_price"]) * abs(p["quantity"])
 
-    def _stk_cost(s: dict) -> float:
-        return s["avg_cost"] * s["quantity"]
-
-    total_cost = sum(_opt_cost(p) for p in positions) + sum(_stk_cost(s) for s in stocks)
     opt_cost_sum = sum(_opt_cost(p) for p in positions)
 
     opt_body_start = len(rows)
@@ -323,7 +319,7 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
         qty = p["quantity"]
         qty_signed = int(qty) if qty.is_integer() else qty
         cost_basis = avg_unsigned * abs(qty)
-        alloc_disp = cost_basis / total_cost if total_cost > 0 else ""
+        alloc_disp = cost_basis / initial_invested if initial_invested > 0 else ""
         current = p.get("current")
         if current is not None:
             pl = (current - avg_unsigned) * abs(qty) if qty > 0 else (avg_unsigned - current) * abs(qty)
@@ -343,7 +339,7 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
     # --- Options TOTAL row (blank spacer + TOTAL) ---
     rows.append([])
     opt_total_idx = len(rows)
-    opt_alloc = opt_cost_sum / total_cost if total_cost > 0 else ""
+    opt_alloc = opt_cost_sum / initial_invested if initial_invested > 0 else ""
     if have_any_pl:
         total_pct = total_pl / total_cost_basis if total_cost_basis > 0 else ""
         rows.append(["TOTAL", "", "", "", "", "", "", round(total_pl, 2), total_pct, opt_alloc])
@@ -374,7 +370,7 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
             qty = s["quantity"]
             qty_disp = int(qty) if float(qty).is_integer() else round(qty, 4)
             cost = avg * qty
-            alloc_disp = cost / total_cost if total_cost > 0 else ""
+            alloc_disp = cost / initial_invested if initial_invested > 0 else ""
             current = s.get("current")
             if current is not None:
                 pl = (current - avg) * qty
@@ -391,7 +387,7 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
 
         rows.append([])
         stock_total_idx = len(rows)
-        s_alloc = stk_cost_sum / total_cost if total_cost > 0 else ""
+        s_alloc = stk_cost_sum / initial_invested if initial_invested > 0 else ""
         if s_have:
             s_total_pct = s_total_pl / s_total_cost if s_total_cost > 0 else ""
             rows.append(["STOCK TOTAL", "", "", "", "", "", "", round(s_total_pl, 2), s_total_pct, s_alloc])
@@ -440,7 +436,18 @@ def main() -> int:
     svc = sheets_service()
     ensure_tab(svc, sheet_id, POSITIONS_TAB)
     ensure_tab(svc, sheet_id, SUMMARY_TAB)
-    sheet_rows, meta = build_sheet(positions, stocks, buying_power, options_collateral, portfolio_cash)
+
+    # Fetch initial invested amount from Summary!B1 (defaults to 45000.0)
+    initial_invested = 45000.0
+    try:
+        res = svc.spreadsheets().values().get(spreadsheetId=sheet_id, range=f"{SUMMARY_TAB}!B1").execute()
+        vals = res.get("values", [])
+        if vals and vals[0] and vals[0][0]:
+            initial_invested = _as_float(vals[0][0]) or 45000.0
+    except Exception as e:
+        log.warning("Failed to fetch initial invested amount from Summary!B1: %s. Defaulting to 45000.0", e)
+
+    sheet_rows, meta = build_sheet(positions, stocks, buying_power, options_collateral, portfolio_cash, initial_invested)
     sid = _sheet_id_int(svc, sheet_id, POSITIONS_TAB)
 
     # Number formats: E avg + G current as 2-decimals, H P/L signed currency,
