@@ -7,9 +7,10 @@ from any device — phone, laptop, or web Telegram — independent of your Mac.
 
 Reads from .env:
   TELEGRAM_BOT_TOKEN        - from @BotFather
-  TELEGRAM_ALLOWED_CHAT_ID  - only this chat may trigger syncs. If unset, the
-                              bot refuses all /sync requests but still answers
-                              /id so you can discover your chat ID safely.
+  TELEGRAM_ALLOWED_CHAT_ID  - who may trigger /sync. Use "*" to allow anyone,
+                              or a comma-separated list of chat IDs to allow
+                              only those. Empty = nobody (fails closed). /id
+                              always works so you can discover a chat ID.
 
 Uses only the standard library (plus python-dotenv, already a project dep).
 """
@@ -74,7 +75,12 @@ def run_sync() -> tuple[bool, str]:
 
 
 def authorized(chat_id: int) -> bool:
-    return ALLOWED != "" and str(chat_id) == ALLOWED
+    # "*" opens the bot to anyone. Otherwise ALLOWED is a comma-separated
+    # allowlist of chat IDs; empty = fail closed (nobody authorized).
+    if ALLOWED == "*":
+        return True
+    allowed = {x.strip() for x in ALLOWED.split(",") if x.strip()}
+    return str(chat_id) in allowed
 
 
 def handle(update: dict) -> None:
@@ -111,8 +117,8 @@ def main() -> int:
     if not TOKEN:
         log.error("TELEGRAM_BOT_TOKEN not set in .env — cannot start.")
         return 2
-    log.info("Bot starting. Authorized chat: %s",
-             ALLOWED or "(NONE SET — /sync disabled until TELEGRAM_ALLOWED_CHAT_ID is configured)")
+    mode = "ANYONE (open)" if ALLOWED == "*" else (ALLOWED or "(none — /sync disabled)")
+    log.info("Bot starting. Authorized: %s", mode)
     offset = None
     while True:
         try:
