@@ -135,6 +135,48 @@ crontab -e
 
 The machine must be on at the scheduled time. Cron does not wake sleeping hardware.
 
+## On-demand sync triggers (optional)
+
+Two ways to fire a sync without SSHing into the VM. Both keep the VM **outbound-only** — it polls the trigger source rather than exposing any inbound port.
+
+### From Telegram (any device)
+
+`telegram_bot.py` long-polls Telegram; send `/sync` to trigger a refresh. See the bot details in `project_context.md` §6.3 and set `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ALLOWED_CHAT_ID` in `.env`.
+
+### From the Google Sheet itself
+
+A "⚡ Sync" menu inside the spreadsheet lets you trigger a sync straight from the sheet — on desktop **and** the mobile Sheets app. It has two parts:
+
+1. **`apps_script/Sync.gs`** — a bound Apps Script that adds the menu. "Sync now" writes a unique request token to a `Sync` tab cell (`Sync!A1`).
+2. **`sheet_trigger.py`** — a VM-side poller that watches `Sync!A1`, runs `./sync` when it sees a new token, and writes the result back to `Sync!A2`.
+
+It reuses the existing service account (no new credentials) and the same outbound-only model as the Telegram bot.
+
+**Set up the Apps Script (one-time):**
+
+1. Open your Google Sheet → **Extensions → Apps Script**
+2. Paste the contents of `apps_script/Sync.gs` into `Code.gs` (replace the default), **Save**
+3. Reload the spreadsheet — the **⚡ Sync** menu appears after a moment
+4. First time you pick **Sync now**, Google asks you to authorize the script (access to this spreadsheet only) — approve once
+
+**Run the poller on the VM:**
+
+```bash
+# After pulling the new files into ~/options-updater on the VM:
+sudo cp options-sync-trigger.service.example /etc/systemd/system/options-sync-trigger.service
+sudo sed -i "s/YOURNAME/$(whoami)/g" /etc/systemd/system/options-sync-trigger.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now options-sync-trigger
+
+# Verify
+systemctl status options-sync-trigger      # should be "active (running)"
+journalctl -u options-sync-trigger -f      # live logs
+```
+
+The poll interval defaults to 30s (override with `SHEET_TRIGGER_POLL_SECONDS` in `.env`). Now **⚡ Sync → Sync now** in the sheet fires a refresh within ~30s; watch `Sync!A2` for status.
+
+**Run it locally instead (no VM):** you can also run the poller on your Mac to test — `source .venv/bin/activate && python3 sheet_trigger.py`. As long as the process is running, the sheet menu triggers a sync.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -149,9 +191,14 @@ The machine must be on at the scheduled time. Cron does not wake sleeping hardwa
 
 - `sync_positions.py` — main script
 - `sync` — convenience wrapper (`./sync` from project dir)
+- `telegram_bot.py` — optional `/sync` trigger bot (Telegram)
+- `sheet_trigger.py` — optional VM poller that lets the Google Sheet trigger a sync
+- `apps_script/Sync.gs` — bound Apps Script that adds the "⚡ Sync" menu to the sheet
 - `requirements.txt` — Python dependencies
 - `.env.example` — template for credentials/config
 - `com.options-sync.plist.example` — macOS LaunchAgent template
+- `options-sync-bot.service.example` — systemd unit for the Telegram bot
+- `options-sync-trigger.service.example` — systemd unit for the sheet-trigger poller
 - `.gitignore` — excludes `.env`, service-account JSON, venv, logs
 
 ## Security notes

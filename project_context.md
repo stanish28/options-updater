@@ -206,6 +206,15 @@ The system supports two independent scheduling methodologies:
 *   **Security**: Locked to a single chat via `TELEGRAM_ALLOWED_CHAT_ID` in `.env`. Any other chat is refused. If that var is unset the bot refuses all `/sync` requests (fails closed). `TELEGRAM_BOT_TOKEN` and the chat ID live only in the gitignored `.env`.
 *   **Service management**: `sudo systemctl {status,restart,stop} options-sync-bot`; live logs via `journalctl -u options-sync-bot -f`. Auto-restarts on crash and on VM reboot.
 
+### 6.4 On-Demand Trigger via the Google Sheet (Sheet-native)
+*   **Components**: `sheet_trigger.py` (VM poller) + `apps_script/Sync.gs` (a bound Apps Script inside the spreadsheet). Runs as a systemd service (`options-sync-trigger.service`) alongside the cron schedule and the optional Telegram bot.
+*   **Purpose**: Trigger a sync directly from the Sheet's **⚡ Sync → Sync now** menu — on desktop and the mobile Sheets app — without SSH, the Telegram bot, or any inbound port.
+*   **Control protocol**: A dedicated `Sync` tab (auto-created). The Apps Script writes a unique request token to `Sync!A1`; the poller treats any token it hasn't seen as a fresh request, runs `./sync`, and writes a status line to `Sync!A2`. On startup the poller seeds its `last_token` from the current cell value so a stale leftover request does not re-fire.
+*   **Why not Sheet → Telegram bot**: A bot cannot inject a command to itself. Apps Script calling `sendMessage` with the bot token produces a message *from* the bot, which never returns via `getUpdates`, so `telegram_bot.handle()` never fires. The cell-trigger approach sidesteps this and reuses the existing service account (no new credentials).
+*   **Outbound-only**: The VM only reads/writes the Sheet via the service account that already has Editor access — same outbound-only model as the Telegram bot's long-polling.
+*   **Config**: `SHEET_TRIGGER_POLL_SECONDS` in `.env` (default 30). Requires the `SHEET_ID` / `GOOGLE_APPLICATION_CREDENTIALS` already set up for the main sync.
+*   **Service management**: `sudo systemctl {status,restart,stop} options-sync-trigger`; live logs via `journalctl -u options-sync-trigger -f`.
+
 ---
 
 ## 7. Known Failure Modes & AI Troubleshooting

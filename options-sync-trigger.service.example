@@ -1,0 +1,32 @@
+# systemd unit for the Google Sheet sync-trigger poller (runs on the GCP VM).
+#
+# This lets you trigger a sync from the Sheet itself (Apps Script menu in
+# apps_script/Sync.gs). It runs independently of the Telegram bot — you can run
+# either, both, or neither.
+#
+# Install (replace YOURNAME with the VM user, e.g. `whoami`):
+#   sudo cp options-sync-trigger.service.example /etc/systemd/system/options-sync-trigger.service
+#   sudo sed -i "s/YOURNAME/$(whoami)/g" /etc/systemd/system/options-sync-trigger.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now options-sync-trigger
+#   systemctl status options-sync-trigger      # should be "active (running)"
+#   journalctl -u options-sync-trigger -f      # live logs
+#
+# Requires SHEET_ID and GOOGLE_APPLICATION_CREDENTIALS in the project .env
+# (already set up for the main sync).
+
+[Unit]
+Description=Options Sync Google Sheet Trigger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOURNAME
+WorkingDirectory=/home/YOURNAME/options-updater
+ExecStart=/home/YOURNAME/options-updater/.venv/bin/python /home/YOURNAME/options-updater/sheet_trigger.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
