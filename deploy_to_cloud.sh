@@ -10,8 +10,13 @@
 set -euo pipefail
 
 # Configuration
-INSTANCE_NAME="instance-20260528-233621"
-ZONE="us-central1-c"
+# NOTE: GCP project ID is "options-updater" (with an "s"). The original VM
+# "instance-20260528-233621" (us-central1-c) was deleted when the project was
+# suspended (billing lapsed ~mid-2026); recreated as "options-sync-vm" in
+# us-central1-a on 2026-09-09. See project_context.md §9 for the full runbook.
+INSTANCE_NAME="options-sync-vm"
+ZONE="us-central1-a"
+PROJECT="options-updater"
 REPO_URL="https://github.com/stanish28/options-updater.git"
 
 # Text Formatting Helpers
@@ -22,6 +27,9 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+# Force the correct project for every gcloud call (the machine's default gcloud
+# project may be something else, e.g. downfor-5b270).
+export CLOUDSDK_CORE_PROJECT="$PROJECT"
 
 echo -e "${BLUE}=====================================================${NC}"
 echo -e "${BLUE}   Options Position Tracker Automated Cloud Deploy    ${NC}"

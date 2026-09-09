@@ -350,3 +350,29 @@ To run the system 100% autonomously, we migrated the tracker to a persistent Goo
 
 ### 9.1 Session Caching & MFA Bypass Mechanics
 Because Robinhood requires interactive 2FA/MFA on first-login, standard headless CI/CD systems cannot log in automatically. The orchestrator overcomes this by copying the Mac's locally generated session token `/Users/tanishshah/.tokens/robinhood.pickle` directly to `/home/tanishshah/.tokens/robinhood.pickle` on the VM. Subsequent remote cron jobs read this cached token, bypassing MFA completely and running in a fully automated, headless fashion.
+
+**The pickle is not permanent.** The Robinhood session expires roughly every few weeks (and definitely after a long gap). When it lapses, a `./sync` (cron, bot, or manual) re-authenticates via a **device-approval push** — someone must tap "approve" in the Robinhood app. Headless VM runs can't approve, so the sheet silently goes stale until the session is refreshed. Recovery: run `./sync` on the Mac, approve on the phone, then `gcloud compute scp ~/.tokens/robinhood.pickle <VM>:~/.tokens/robinhood.pickle`. (Flaky retries with `Connection reset by peer` at the verification step happen; approving the push promptly usually gets it through.)
+
+### 9.2 Live VM Coordinates & Recreation Runbook (as of 2026-09-09)
+**GCP gotchas that will bite you:**
+- **Project ID is `options-updater` (with an "s")** — not `option-updater`. `gcloud` may default to a *different* project (e.g. `downfor-5b270`); always pass `--project=options-updater` or `export CLOUDSDK_CORE_PROJECT=options-updater`.
+- **Billing must stay active.** If billing lapses, GCP disables the Compute Engine API and eventually **deletes the VM**. This happened once (mid-2026): the original `instance-20260528-233621` in `us-central1-c` was deleted; recovered 2026-09-09.
+
+**Current instance:** `options-sync-vm`, zone `us-central1-a`, project `options-updater`, always-free `e2-micro`, Debian 12. (Zone is `-a` not `-c` because `-c` was capacity-exhausted for e2-micro at recreation time; any `us-central1` zone keeps always-free eligibility.)
+
+**Two systemd services run on the VM** (both `enable`d):
+- `options-sync-bot` — Telegram `/sync` bot (`telegram_bot.py`), open access (`TELEGRAM_ALLOWED_CHAT_ID=*`).
+- `options-sync-trigger` — Sheet "⚡ Sync" menu poller (`sheet_trigger.py`). *Not installed on the current VM* — the sheet has no `Sync` tab / Apps Script yet.
+Plus the **crontab**: `0 6,12 * * 1-5 cd ~/options-updater && ./sync >> launchd.log 2>&1`, VM clock `America/Los_Angeles`.
+
+**Recreate-from-scratch runbook** (what was done 2026-09-09):
+1. `gcloud compute instances create options-sync-vm --project=options-updater --zone=us-central1-a --machine-type=e2-micro --image-family=debian-12 --image-project=debian-cloud` (try other `us-central1-*` zones if one is exhausted).
+2. `ssh`: `mkdir -p ~/.tokens ~/options-updater`; `apt-get install -y git python3 python3-venv python3-pip`; `git clone <REPO_URL> ~/options-updater`.
+3. `scp` `.env`, `service-account.json` → `~/options-updater/`, and `~/.tokens/robinhood.pickle` → `~/.tokens/`.
+4. `sed -i 's#/Users/tanishshah/options_updater#/home/tanishshah/options-updater#g' .env` (fix creds path for Linux).
+5. `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && chmod +x sync`.
+6. `sudo timedatectl set-timezone America/Los_Angeles`; install the crontab line above; `sudo systemctl restart cron`.
+7. Install the bot service: `sudo cp options-sync-bot.service.example /etc/systemd/system/options-sync-bot.service && sudo sed -i "s/YOURNAME/$(whoami)/g" ...  && sudo systemctl enable --now options-sync-bot`.
+8. Verify: `./sync` runs headlessly (no challenge) and writes the sheet.
+
+> `deploy_to_cloud.sh` automates steps 2–6 but **assumes the instance already exists** and does **not** install the systemd services — do step 1 and step 7 by hand, or extend the script.
