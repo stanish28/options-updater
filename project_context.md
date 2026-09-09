@@ -353,6 +353,8 @@ Because Robinhood requires interactive 2FA/MFA on first-login, standard headless
 
 **The pickle is not permanent.** The Robinhood session expires roughly every few weeks (and definitely after a long gap). When it lapses, a `./sync` (cron, bot, or manual) re-authenticates via a **device-approval push** — someone must tap "approve" in the Robinhood app. Headless VM runs can't approve, so the sheet silently goes stale until the session is refreshed. Recovery: run `./sync` on the Mac, approve on the phone, then `gcloud compute scp ~/.tokens/robinhood.pickle <VM>:~/.tokens/robinhood.pickle`. (Flaky retries with `Connection reset by peer` at the verification step happen; approving the push promptly usually gets it through.)
 
+**Failure alerting (built 2026-09-09):** `sync_positions.py`'s `__main__` wraps `main()` in try/except; on any failure it calls `notify_failure()`, which Telegram-DMs `TELEGRAM_ALERT_CHAT_ID` (the owner) through the bot token — with tailored "session expired, re-auth + re-push" guidance when the error looks auth-related — then exits non-zero. This covers cron, bot, and manual runs, so an expired session no longer fails silently. Requires `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALERT_CHAT_ID` in `.env` (both Mac and VM).
+
 ### 9.2 Live VM Coordinates & Recreation Runbook (as of 2026-09-09)
 **GCP gotchas that will bite you:**
 - **Project ID is `options-updater` (with an "s")** — not `option-updater`. `gcloud` may default to a *different* project (e.g. `downfor-5b270`); always pass `--project=options-updater` or `export CLOUDSDK_CORE_PROJECT=options-updater`.
