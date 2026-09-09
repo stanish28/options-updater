@@ -43,6 +43,41 @@ def env(name: str, required: bool = False, default: str = "") -> str:
     return val
 
 
+def notify_failure(err) -> None:
+    """Telegram-alert the owner when a sync fails, so silent scheduled failures
+    (usually an expired Robinhood session) don't leave the sheet quietly stale.
+
+    Sends to TELEGRAM_ALERT_CHAT_ID via TELEGRAM_BOT_TOKEN. No-ops if either is
+    unset, and never raises — alerting must not mask the original error."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip()
+    if not token or not chat:
+        return
+    msg = str(err) or type(err).__name__
+    when = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%b %-d, %-I:%M %p %Z")
+    session_issue = any(k in msg.lower() for k in
+                        ("logged in", "login", "auth", "mfa", "challenge", "verification"))
+    if session_issue:
+        text = (f"⚠️ Options sync FAILED — {when}\n"
+                "Robinhood session has likely expired.\n\n"
+                "Fix: run ./sync on your Mac, approve the Robinhood push on your phone, "
+                "then re-push the session to the VM.\n\n"
+                f"Details: {msg[:300]}")
+    else:
+        text = f"⚠️ Options sync FAILED — {when}\n\nDetails: {msg[:400]}"
+    try:
+        import urllib.parse
+        import urllib.request
+        data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data),
+            timeout=15,
+        )
+        log.info("Sent failure alert to Telegram (chat %s)", chat)
+    except Exception as e:
+        log.warning("Could not send failure alert: %s", e)
+
+
 def login() -> None:
     user = env("ROBINHOOD_USERNAME", required=True)
     pwd = env("ROBINHOOD_PASSWORD", required=True)
@@ -603,4 +638,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # main() returning 0 raises SystemExit(0) (not an Exception) → clean success.
+    # Any real failure (notably an expired Robinhood session, which surfaces as
+    # "... can only be called when logged in") is caught, alerted, and re-signalled
+    # as a non-zero exit so cron/bot runs don't fail silently.
+    try:
+        sys.exit(main())
+    except Exception as e:
+        notify_failure(e)
+        log.error("Sync failed: %s", e)
+        sys.exit(1)
