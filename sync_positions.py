@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import sys
 from datetime import datetime
 from typing import Optional
@@ -78,11 +79,50 @@ def notify_failure(err) -> None:
         log.warning("Could not send failure alert: %s", e)
 
 
+class LoginTimeout(Exception):
+    """Raised when the Robinhood login exceeds LOGIN_TIMEOUT_SECONDS."""
+
+
 def login() -> None:
+    """Log into Robinhood, with a hard cap on how long we'll wait.
+
+    Why the cap: when the cached session expires, robin_stocks falls into a
+    device-approval flow whose inner poll loop (`while True: sleep(5)` in
+    authentication._validate_sherrif_id) is UNBOUNDED. On an unattended cron run
+    nobody ever taps "approve", so the run hangs ~50 minutes until some network
+    error finally kills it — delaying the failure alert by the same ~50 minutes.
+    A SIGALRM cap turns that into a fast, clean failure that alerts immediately.
+    Default 120s: long enough for a present user to approve the push, short
+    enough that unattended runs give up quickly. Override with
+    LOGIN_TIMEOUT_SECONDS."""
     user = env("ROBINHOOD_USERNAME", required=True)
     pwd = env("ROBINHOOD_PASSWORD", required=True)
-    log.info("Logging into Robinhood... (may prompt for 2FA on first run)")
-    r.login(user, pwd)
+    try:
+        timeout = int(env("LOGIN_TIMEOUT_SECONDS", default="120") or 120)
+    except ValueError:
+        timeout = 120
+    log.info("Logging into Robinhood... (may prompt for 2FA; %ds cap)", timeout)
+
+    def _on_timeout(signum, frame):
+        raise LoginTimeout(
+            f"Robinhood login timed out after {timeout}s waiting for device approval — "
+            "the cached session has expired and no one approved the push."
+        )
+
+    # SIGALRM is Unix-only and main-thread-only; both hold for cron/bot/manual
+    # runs here. Fall back to an uncapped login anywhere it isn't available.
+    use_alarm = hasattr(signal, "SIGALRM")
+    prev_handler = None
+    if use_alarm:
+        prev_handler = signal.signal(signal.SIGALRM, _on_timeout)
+        signal.alarm(timeout)
+    try:
+        r.login(user, pwd)
+    finally:
+        if use_alarm:
+            signal.alarm(0)
+            if prev_handler is not None:
+                signal.signal(signal.SIGALRM, prev_handler)
     log.info("Logged in")
 
 
