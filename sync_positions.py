@@ -15,7 +15,7 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -33,6 +33,33 @@ SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 POSITIONS_TAB = "Positions"
 SUMMARY_TAB = "Summary"
 REALIZED_TAB = "Realized P/L"   # script-owned; the hand-kept "Closed Positions" tab is NEVER touched
+
+# --- Risk flag (Positions column M) -------------------------------------
+# Surfaces LONG options heading for a worthless expiry while there's still time
+# to act. Motivated by the realized-P/L review (2026-09-23): 8 contracts that
+# expired worthless cost $12,038 -- 7 of them long calls that went to zero,
+# several held for months at deep losses (WPM sat at -98% for weeks).
+# Long-only on purpose: a SHORT option expiring worthless is a win, so flagging
+# shorts would be pure noise.
+FLAG_COL = 12                   # 0-indexed -> column M (K/L hold the cash block)
+FLAG_DOWN_PCT = -0.75           # flag a long option down 75%+
+FLAG_DAYS_LEFT = 21             # ...or within 21 days of expiry
+
+
+def _risk_flag(qty: float, pct_change, expiry: Optional[str], today: date) -> str:
+    """Return a short warning string for an at-risk LONG option, else ''."""
+    if qty <= 0:
+        return ""
+    parts = []
+    if isinstance(pct_change, (int, float)) and pct_change <= FLAG_DOWN_PCT:
+        parts.append(f"⚠️ Down {abs(pct_change) * 100:.0f}%")
+    try:
+        days = (date.fromisoformat(str(expiry)) - today).days
+        if 0 <= days <= FLAG_DAYS_LEFT:
+            parts.append(f"⏳ {days}d left")
+    except (TypeError, ValueError):
+        pass
+    return " · ".join(parts)
 # Cash metrics have been moved to the Positions tab (column K/L).
 # They are no longer written to the Summary tab directly.
 
@@ -390,6 +417,8 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
     total_pl = 0.0
     total_cost_basis = 0.0
     have_any_pl = False
+    today = date.today()
+    flag_cells: list[tuple[int, str]] = []   # (row index, flag text) -> column M
     for p in sorted(positions, key=lambda p: (p["expiration"], p["underlying"])):
         avg_unsigned = abs(p["avg_price"])
         qty = p["quantity"]
@@ -406,6 +435,9 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
             have_any_pl = True
         else:
             current_disp = pl_disp = pct_disp = ""
+        flag = _risk_flag(qty, pct_disp, p["expiration"], today)
+        if flag:
+            flag_cells.append((len(rows), flag))
         rows.append([
             p["underlying"], p["strike"], p["expiration"], p["type"],
             round(avg_unsigned, 2), qty_signed, current_disp, pl_disp, pct_disp, alloc_disp,
@@ -496,6 +528,24 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
         while len(rows[3]) < 10:
             rows[3].append("")
         rows[3].extend(["Options Collateral", round(options_collateral)])
+
+    # --- Column M risk flags -------------------------------------------------
+    # Applied LAST on purpose: the K/L cash block above pads rows to length 10
+    # then extends, so writing column M earlier would shift those cash values.
+    def _set_flag_col(row_idx: int, value: str) -> None:
+        row = rows[row_idx]
+        while len(row) < FLAG_COL:
+            row.append("")
+        if len(row) == FLAG_COL:
+            row.append(value)
+        else:
+            row[FLAG_COL] = value
+
+    if flag_cells:
+        _set_flag_col(1, "Flag")            # header cell M2
+        for idx, text in flag_cells:
+            _set_flag_col(idx, text)
+    meta["flag_rows"] = [idx for idx, _ in flag_cells]
 
     return rows, meta
 
@@ -704,8 +754,24 @@ def main() -> int:
         }
     })
 
+    # Column M risk flags: bold red so at-risk long options are impossible to miss.
+    if meta.get("flag_rows"):
+        fmt_requests.append({"repeatCell": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": meta["opt_body"][0], "endRowIndex": meta["opt_body"][1],
+                      "startColumnIndex": FLAG_COL, "endColumnIndex": FLAG_COL + 1},
+            "cell": {"userEnteredFormat": {
+                "textFormat": {"bold": True, "foregroundColor": {"red": 0.80, "green": 0.15, "blue": 0.15}},
+                "horizontalAlignment": "LEFT"}},
+            "fields": ("userEnteredFormat.textFormat.bold,"
+                       "userEnteredFormat.textFormat.foregroundColor,"
+                       "userEnteredFormat.horizontalAlignment"),
+        }})
+
     write_tab(svc, sheet_id, POSITIONS_TAB, sheet_rows, format_requests=fmt_requests)
-    log.info("Wrote Positions tab: %d option(s), %d stock(s) + totals", len(positions), len(stocks))
+    log.info("Wrote Positions tab: %d option(s), %d stock(s) + totals%s",
+             len(positions), len(stocks),
+             f", {len(meta['flag_rows'])} risk flag(s)" if meta.get("flag_rows") else "")
 
     # Write Options Allocation and Stocks Allocation to Summary!G1:H2
     opt_cost_sum = sum(abs(p["avg_price"]) * abs(p["quantity"]) for p in positions)
