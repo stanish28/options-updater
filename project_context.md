@@ -171,6 +171,14 @@ Below the options table and its TOTAL row, the script appends a **STOCKS** secti
 ### 5.6 Closed Positions Tab — Intentionally Manual
 The `Closed Positions` tab (Ticker | Realized Profit/Loss, one row per closed trade) is **hand-maintained and never touched by the script** (user decision, 2026-06-01). Rationale: Robinhood does not store realized P/L on closed positions (`average_price` resets to 0 once closed), so it would have to be reconstructed from order history — which **misses expirations** (selling puts that expire worthless generates no closing order, only an event) and **cannot cover the individual sub-account** (not API-accessible without its account number). Some rows in the tab are from that individual account. **Do not automate or overwrite this tab** — it holds pre-Feb-2026 and other-sub-account trades that cannot be regenerated. (Superseded in part by §5.8: realized P/L *is* now computed automatically, but into a separate tab, leaving this one alone.)
 
+### 5.9 Risk Flag — Positions column M (added 2026-09-23)
+`_risk_flag()` marks **long** options heading for a worthless expiry, so they surface while there's still time to act. Written to **column M** (`FLAG_COL = 12`; K/L hold the cash block) with bold red text, and applied **last** in `build_sheet` — the K/L cash block pads rows to length 10 then extends, so writing M earlier shifts those cash values.
+
+- Triggers: `% change ≤ FLAG_DOWN_PCT` (**-75%**) and/or `≤ FLAG_DAYS_LEFT` (**21**) days to expiry.
+- **Long-only on purpose** — a SHORT option expiring worthless is a *win*, so flagging shorts is pure noise (e.g. IREN at -70.8% short is correctly ignored).
+- Motivation: the realized-P/L review found 8 expired contracts cost **$12,038**, 7 of them long calls that went to zero; WPM sat at -98% for weeks first.
+- Does **not** appear on the Summary tab — that mirror pulls `A3:J` only, and M is past the K/L cash block.
+
 ### 5.8 Realized P/L Tab (script-owned, added 2026-09-23)
 A separate **`Realized P/L`** tab, rewritten on every sync, reconstructs realized profit/loss for every closed option contract — `fetch_realized_trades()` + `write_realized_tab()`.
 
