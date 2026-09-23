@@ -72,16 +72,33 @@ def env(name: str, required: bool = False, default: str = "") -> str:
     return val
 
 
-def notify_failure(err) -> None:
-    """Telegram-alert the owner when a sync fails, so silent scheduled failures
-    (usually an expired Robinhood session) don't leave the sheet quietly stale.
+def telegram_send(text: str) -> bool:
+    """Send a Telegram message to TELEGRAM_ALERT_CHAT_ID via TELEGRAM_BOT_TOKEN.
 
-    Sends to TELEGRAM_ALERT_CHAT_ID via TELEGRAM_BOT_TOKEN. No-ops if either is
-    unset, and never raises — alerting must not mask the original error."""
+    No-ops (returns False) if either is unset, and never raises — notifications
+    must never mask or interrupt the work that triggered them."""
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat = os.environ.get("TELEGRAM_ALERT_CHAT_ID", "").strip()
     if not token or not chat:
-        return
+        return False
+    try:
+        import urllib.parse
+        import urllib.request
+        data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
+        urllib.request.urlopen(
+            urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data),
+            timeout=15,
+        )
+        log.info("Sent Telegram message to chat %s", chat)
+        return True
+    except Exception as e:
+        log.warning("Could not send Telegram message: %s", e)
+        return False
+
+
+def notify_failure(err) -> None:
+    """Telegram-alert the owner when a sync fails, so silent scheduled failures
+    (usually an expired Robinhood session) don't leave the sheet quietly stale."""
     msg = str(err) or type(err).__name__
     when = datetime.now(ZoneInfo("America/Los_Angeles")).strftime("%b %-d, %-I:%M %p %Z")
     session_issue = any(k in msg.lower() for k in
@@ -94,17 +111,7 @@ def notify_failure(err) -> None:
                 f"Details: {msg[:300]}")
     else:
         text = f"⚠️ Options sync FAILED — {when}\n\nDetails: {msg[:400]}"
-    try:
-        import urllib.parse
-        import urllib.request
-        data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
-        urllib.request.urlopen(
-            urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data),
-            timeout=15,
-        )
-        log.info("Sent failure alert to Telegram (chat %s)", chat)
-    except Exception as e:
-        log.warning("Could not send failure alert: %s", e)
+    telegram_send(text)
 
 
 class LoginTimeout(Exception):
