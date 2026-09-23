@@ -171,6 +171,17 @@ Below the options table and its TOTAL row, the script appends a **STOCKS** secti
 ### 5.6 Closed Positions Tab — Intentionally Manual
 The `Closed Positions` tab (Ticker | Realized Profit/Loss, one row per closed trade) is **hand-maintained and never touched by the script** (user decision, 2026-06-01). Rationale: Robinhood does not store realized P/L on closed positions (`average_price` resets to 0 once closed), so it would have to be reconstructed from order history — which **misses expirations** (selling puts that expire worthless generates no closing order, only an event) and **cannot cover the individual sub-account** (not API-accessible without its account number). Some rows in the tab are from that individual account. **Do not automate or overwrite this tab** — it holds pre-Feb-2026 and other-sub-account trades that cannot be regenerated. (Superseded in part by §5.8: realized P/L *is* now computed automatically, but into a separate tab, leaving this one alone.)
 
+### 5.10 Expiry Reminder — `expiry_reminder.py` (added 2026-09-23)
+Telegram push for contracts expiring inside `EXPIRY_REMINDER_DAYS` (default **3**). The column-M flag is passive (only helps if the sheet is open); this pushes the same information while there's still time to act. Same motivation: 8 worthless expiries cost **$12,038**.
+
+- **Schedule:** VM cron `0 10 * * 1-5` (10 AM PT — mid-session, market is open 6:30 AM–1 PM PT).
+- **Silent when nothing qualifies**, so it never becomes noise that gets ignored.
+- **Three-way split, because the right action differs:**
+  - 🔴 **LONG** → goes to $0 if ignored; close for salvage or consciously accept it.
+  - 🟠 **SHORT in the money** → heads for **assignment**, *not* a free expiry. Calling this "the win" would be actively misleading — it's how the account acquired its assigned stock positions.
+  - 🟢 **SHORT on track** → expiring worthless is the win; do nothing.
+- Reuses `telegram_send()` (extracted out of `notify_failure()`), and wraps `main()` so a failure alerts via the same path as the sync.
+
 ### 5.9 Risk Flag — Positions column M (added 2026-09-23)
 `_risk_flag()` marks **long** options heading for a worthless expiry, so they surface while there's still time to act. Written to **column M** (`FLAG_COL = 12`; K/L hold the cash block) with bold red text, and applied **last** in `build_sheet` — the K/L cash block pads rows to length 10 then extends, so writing M earlier shifts those cash values.
 
