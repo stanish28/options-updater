@@ -169,7 +169,24 @@ Below the options table and its TOTAL row, the script appends a **STOCKS** secti
 *   Bhuvan account only (same multi-account limitation as options).
 
 ### 5.6 Closed Positions Tab — Intentionally Manual
-The `Closed Positions` tab (Ticker | Realized Profit/Loss, one row per closed trade) is **hand-maintained and never touched by the script** (user decision, 2026-06-01). Rationale: Robinhood does not store realized P/L on closed positions (`average_price` resets to 0 once closed), so it would have to be reconstructed from order history — which **misses expirations** (selling puts that expire worthless generates no closing order, only an event) and **cannot cover the individual sub-account** (not API-accessible without its account number). Some rows in the tab are from that individual account. **Do not automate this tab** unless the user explicitly revisits the decision.
+The `Closed Positions` tab (Ticker | Realized Profit/Loss, one row per closed trade) is **hand-maintained and never touched by the script** (user decision, 2026-06-01). Rationale: Robinhood does not store realized P/L on closed positions (`average_price` resets to 0 once closed), so it would have to be reconstructed from order history — which **misses expirations** (selling puts that expire worthless generates no closing order, only an event) and **cannot cover the individual sub-account** (not API-accessible without its account number). Some rows in the tab are from that individual account. **Do not automate or overwrite this tab** — it holds pre-Feb-2026 and other-sub-account trades that cannot be regenerated. (Superseded in part by §5.8: realized P/L *is* now computed automatically, but into a separate tab, leaving this one alone.)
+
+### 5.8 Realized P/L Tab (script-owned, added 2026-09-23)
+A separate **`Realized P/L`** tab, rewritten on every sync, reconstructs realized profit/loss for every closed option contract — `fetch_realized_trades()` + `write_realized_tab()`.
+
+**Method.** Robinhood doesn't store realized P/L, so cash flows are netted per contract: `credit order = +`, `debit order = −`. A contract counts as realized once it is **no longer in the open positions**, which is what finally solves the old expiration blocker — contracts that expired worthless or were assigned produce no closing order, but they do drop out of open positions.
+- **Single-leg** orders use the order's `net_amount` (fees included).
+- **Multi-leg/spreads** are split per leg using each leg's own `executions` (gross of fees), since one order premium covers both legs.
+
+**Validated** to the dollar against the hand-kept Closed Positions numbers: SPOT −1,459 · CEG 1,390 · PANW 1,805 · ORCL 1,441 · USO −875 · SNOW 975 · INTU −1,060 all matched (cents = fees). First run: **123 trades, +$21,195** total.
+
+**Columns:** Ticker | Strike | Expiry | Put/Call | Contracts | Opened | Closed | Realized P/L | Outcome (`Closed` vs `Expired/Assigned`), newest first, bold TOTAL row.
+
+**Known limits (do not mistake for bugs):**
+- Order history only reaches back ~Feb 2026 — older trades are unrecoverable.
+- Only the configured account; other sub-accounts remain invisible.
+- The `/options/events/` endpoint **ignores the account_number filter** (returns only the default account's events), so it is deliberately *not* used — the open-positions check covers expirations instead.
+- An **assigned** short put shows its premium as realized profit, which is correct for the option but ignores the resulting stock cost basis.
 
 ### 5.7 Summary Tab — Formatting & Allocation Mirror
 The Summary tab shows the same positions table as Positions via an **array formula** (`Summary!A8 = ={Positions!A3:J}`), which copies **values but not formatting**. So each run `main()`:
