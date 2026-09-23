@@ -32,6 +32,7 @@ log = logging.getLogger("sync")
 SHEETS_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 POSITIONS_TAB = "Positions"
 SUMMARY_TAB = "Summary"
+REALIZED_TAB = "Realized P/L"   # script-owned; the hand-kept "Closed Positions" tab is NEVER touched
 # Cash metrics have been moved to the Positions tab (column K/L).
 # They are no longer written to the Summary tab directly.
 
@@ -311,27 +312,27 @@ def _range(sid: int, r0: int, r1: int, c0: int = 0, c1: int = _TABLE_COLS) -> di
             "startColumnIndex": c0, "endColumnIndex": c1}
 
 
-def _align_center_req(sid: int, r0: int, r1: int) -> dict:
+def _align_center_req(sid: int, r0: int, r1: int, cols: int = _TABLE_COLS) -> dict:
     return {"repeatCell": {
-        "range": _range(sid, r0, r1),
+        "range": _range(sid, r0, r1, 0, cols),
         "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER",
                                        "verticalAlignment": "MIDDLE"}},
         "fields": "userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment",
     }}
 
 
-def _header_fill_req(sid: int, row: int) -> dict:
+def _header_fill_req(sid: int, row: int, cols: int = _TABLE_COLS) -> dict:
     return {"repeatCell": {
-        "range": _range(sid, row, row + 1),
+        "range": _range(sid, row, row + 1, 0, cols),
         "cell": {"userEnteredFormat": {"backgroundColor": {"red": 0.85, "green": 0.89, "blue": 0.95}}},
         "fields": "userEnteredFormat.backgroundColor",
     }}
 
 
-def _border_grid_req(sid: int, r0: int, r1: int) -> dict:
+def _border_grid_req(sid: int, r0: int, r1: int, cols: int = _TABLE_COLS) -> dict:
     line = {"style": "SOLID", "color": {"red": 0.7, "green": 0.7, "blue": 0.7}}
     return {"updateBorders": {
-        "range": _range(sid, r0, r1),
+        "range": _range(sid, r0, r1, 0, cols),
         "top": line, "bottom": line, "left": line, "right": line,
         "innerHorizontal": line, "innerVertical": line,
     }}
@@ -497,6 +498,123 @@ def build_sheet(positions: list[dict], stocks: list[dict], buying_power: Optiona
         rows[3].extend(["Options Collateral", round(options_collateral)])
 
     return rows, meta
+
+
+def fetch_realized_trades(account_number: Optional[str]) -> list[dict]:
+    """Reconstruct realized P/L for every closed option contract from order history.
+
+    Robinhood does NOT store realized P/L — a closed position's `average_price`
+    resets to 0 — so we net the cash flows per contract instead:
+        credit order = money in (+),  debit order = money out (-)
+
+    A contract counts as realized once it is no longer among the open positions.
+    That deliberately also captures contracts that **expired worthless or were
+    assigned**, which produce no closing order at all (the old blocker that kept
+    this tab manual).
+
+    Accuracy notes:
+      * Single-leg orders use the order's `net_amount` (fees included) — this was
+        validated to the dollar against hand-kept records (SPOT/CEG/PANW/ORCL/
+        USO/SNOW/INTU all matched).
+      * Multi-leg (spread) orders are split per leg using each leg's own
+        `executions` (gross of fees), since one order premium covers both legs.
+      * History only goes back as far as Robinhood's order feed (~Feb 2026);
+        older trades cannot be reconstructed.
+      * Only this account — other sub-accounts are not reachable via the API.
+    """
+    try:
+        raw_open = r.options.get_open_option_positions(account_number=account_number) or []
+        orders = r.orders.get_all_option_orders(account_number=account_number) or []
+    except Exception as e:
+        log.warning("realized P/L fetch failed: %s", e)
+        return []
+
+    open_ids = {p["option"].rstrip("/").split("/")[-1]
+                for p in raw_open if (_as_float(p.get("quantity")) or 0) != 0}
+
+    acc: dict[str, dict] = {}
+    for o in orders:
+        if o.get("state") != "filled":
+            continue
+        legs = o.get("legs") or []
+        multi = len(legs) > 1
+        date = (o.get("created_at") or "")[:10]
+        for lg in legs:
+            oid = lg["option"].rstrip("/").split("/")[-1]
+            c = acc.setdefault(oid, {"cash": 0.0, "open_q": 0.0, "close_q": 0.0, "symbol": None,
+                                     "strike": 0.0, "type": "?", "expiry": None,
+                                     "opened": None, "closed": None})
+            if multi:
+                execs = lg.get("executions") or []
+                value = sum((_as_float(e.get("price")) or 0) * (_as_float(e.get("quantity")) or 0) * 100
+                            for e in execs)
+                c["cash"] += value if lg.get("side") == "sell" else -value
+                qty = sum(_as_float(e.get("quantity")) or 0 for e in execs)
+            else:
+                sign = 1.0 if o.get("direction") == "credit" else -1.0
+                c["cash"] += sign * (_as_float(o.get("net_amount")) or 0)
+                qty = _as_float(o.get("processed_quantity")) or 0
+            if lg.get("position_effect") == "open":
+                c["open_q"] += qty
+            else:
+                c["close_q"] += qty
+            c["symbol"] = o.get("chain_symbol")
+            c["strike"] = _as_float(lg.get("strike_price")) or 0.0
+            c["type"] = (lg.get("option_type") or "?")[0].upper()
+            c["expiry"] = lg.get("expiration_date")
+            c["opened"] = date if not c["opened"] else min(c["opened"], date)
+            c["closed"] = date if not c["closed"] else max(c["closed"], date)
+
+    trades = []
+    for oid, c in acc.items():
+        if oid in open_ids or c["open_q"] <= 0:
+            continue  # still open, or we only ever saw a closing leg
+        c["outcome"] = "Closed" if c["close_q"] >= c["open_q"] - 1e-9 else "Expired/Assigned"
+        c["contracts"] = int(c["open_q"]) if float(c["open_q"]).is_integer() else c["open_q"]
+        trades.append(c)
+    trades.sort(key=lambda t: (t["closed"] or "", t["symbol"] or ""), reverse=True)
+    log.info("Reconstructed %d realized option trade(s)", len(trades))
+    return trades
+
+
+def write_realized_tab(svc, sheet_id: str, trades: list[dict]) -> None:
+    """Rewrite the script-owned Realized P/L tab (newest trade first + TOTAL)."""
+    rows: list[list] = []
+    now_pt = datetime.now(ZoneInfo("America/Los_Angeles"))
+    rows.append([f"Last synced: {now_pt.strftime('%b %-d, %Y %-I:%M %p %Z')}"])
+    rows.append(["Ticker", "Strike", "Expiry", "Put/Call", "Contracts",
+                 "Opened", "Closed", "Realized P/L", "Outcome"])
+    body_start = len(rows)
+    total = 0.0
+    for t in trades:
+        total += t["cash"]
+        rows.append([t["symbol"], t["strike"], t["expiry"], t["type"], t["contracts"],
+                     t["opened"], t["closed"], round(t["cash"], 2), t["outcome"]])
+    body_end = len(rows)
+    rows.append([])
+    total_idx = len(rows)
+    rows.append(["TOTAL", "", "", "", "", "", "", round(total, 2), ""])
+
+    cols = 9
+    sid = _sheet_id_int(svc, sheet_id, REALIZED_TAB)
+    fmt = [
+        _num_format_req(sid, body_start, body_end, 7, SIGNED_CURRENCY_FMT),   # H realized P/L
+        _num_format_req(sid, total_idx, total_idx + 1, 7, SIGNED_CURRENCY_FMT),
+        _align_center_req(sid, 1, total_idx + 1, cols),
+        _header_fill_req(sid, 1, cols),
+        _border_grid_req(sid, 1, body_end, cols),
+        _border_grid_req(sid, total_idx, total_idx + 1, cols),
+        _bold_row_req(sid, 1),
+        _bold_row_req(sid, total_idx),
+    ]
+    fmt.append({"repeatCell": {
+        "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1},
+        "cell": {"userEnteredFormat": {"textFormat": {"italic": True, "foregroundColor": {"red": 0.4, "green": 0.4, "blue": 0.4}}}},
+        "fields": "userEnteredFormat.textFormat.italic,userEnteredFormat.textFormat.foregroundColor",
+    }})
+    write_tab(svc, sheet_id, REALIZED_TAB, rows, format_requests=fmt)
+    log.info("Wrote %s tab: %d trade(s), total realized $%s",
+             REALIZED_TAB, len(trades), f"{round(total):,}")
 
 
 def main() -> int:
@@ -673,6 +791,12 @@ def main() -> int:
         }},
     ]}).execute()
     log.info("Mirrored Positions formatting onto Summary tab")
+
+    # Realized P/L reconstructed from order history -> its own script-owned tab.
+    # The hand-kept "Closed Positions" tab is intentionally NEVER touched: it
+    # holds pre-Feb-2026 and other-sub-account trades that cannot be rebuilt.
+    ensure_tab(svc, sheet_id, REALIZED_TAB)
+    write_realized_tab(svc, sheet_id, fetch_realized_trades(account_number))
 
     return 0
 
